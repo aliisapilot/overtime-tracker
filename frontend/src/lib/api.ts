@@ -255,7 +255,13 @@ export async function createJobSite(
   return sendGasRequest<{ site: JobSite }>({
     action: 'createJobSite',
     token,
-    ...data,
+    name: data.name,
+    address: data.address,
+    lat: data.latitude,
+    lon: data.longitude,
+    latitude: data.latitude,
+    longitude: data.longitude,
+    geofenceRadius: data.geofenceRadius,
   });
 }
 
@@ -269,7 +275,16 @@ export async function updateJobSite(
   return sendGasRequest<{ site: JobSite }>({
     action: 'updateJobSite',
     token,
-    ...data,
+    siteId: data.siteId,
+    id: data.siteId,
+    name: data.name,
+    address: data.address,
+    lat: data.latitude,
+    lon: data.longitude,
+    latitude: data.latitude,
+    longitude: data.longitude,
+    geofenceRadius: data.geofenceRadius,
+    status: data.status,
   });
 }
 
