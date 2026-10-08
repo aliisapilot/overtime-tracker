@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import dynamic from 'next/dynamic';
 import {
   UserSession,
   JobSite,
@@ -14,6 +15,15 @@ import {
   calculateDistanceMeters,
   GpsCoordinates,
 } from '@/lib/geo';
+
+const GeofenceMap = dynamic(() => import('@/components/GeofenceMap'), {
+  ssr: false,
+  loading: () => (
+    <div className="w-full h-64 sm:h-80 rounded-2xl bg-slate-800/60 flex items-center justify-center text-slate-400 text-xs">
+      Loading interactive geofence map...
+    </div>
+  ),
+});
 
 interface LabourerDashboardProps {
   session: UserSession;
@@ -32,6 +42,7 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
   const [gpsError, setGpsError] = useState<string | null>(null);
   const [distanceToSite, setDistanceToSite] = useState<number | null>(null);
   const [insideGeofence, setInsideGeofence] = useState<boolean>(false);
+  const [showMap, setShowMap] = useState<boolean>(true);
 
   // Action states
   const [actionLoading, setActionLoading] = useState(false);
@@ -384,6 +395,36 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
           </div>
         </section>
       </div>
+
+      {/* Interactive Geofence Map */}
+      {jobSite && jobSite.Latitude && jobSite.Longitude && (
+        <section className="glass-card rounded-3xl p-5 sm:p-6">
+          <div className="flex justify-between items-center mb-3">
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+              <span>🗺️</span>
+              <span>Site Geofence Map (OpenStreetMap)</span>
+            </h2>
+            <button
+              onClick={() => setShowMap(!showMap)}
+              className="text-xs text-blue-400 hover:text-blue-300 font-medium transition-colors"
+            >
+              {showMap ? 'Hide Map' : 'Show Map'}
+            </button>
+          </div>
+          {showMap && (
+            <GeofenceMap
+              siteLat={Number(jobSite.Latitude)}
+              siteLon={Number(jobSite.Longitude)}
+              siteName={jobSite.Name}
+              geofenceRadius={Number(jobSite['Geofence Radius']) || 100}
+              userLat={gps ? gps.lat : undefined}
+              userLon={gps ? gps.lon : undefined}
+              userAccuracy={gps ? gps.accuracy : undefined}
+              insideGeofence={insideGeofence}
+            />
+          )}
+        </section>
+      )}
 
       {/* Large Action Buttons (START / END SHIFT) */}
       <section className="glass-panel rounded-3xl p-6 sm:p-8">

@@ -4,7 +4,9 @@ import {
   JobSite,
   EmployeeProfile,
   getEmployees,
+  createEmployee,
   getJobSites,
+  createJobSite,
   getAttendance,
   getPendingOvertime,
   approveOvertime,
@@ -59,6 +61,87 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
   const [overtimeList, setOvertimeList] = useState<OvertimeItem[]>([]);
   const [attendanceList, setAttendanceList] = useState<AttendanceItem[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>([]);
+
+  // Modals state
+  const [showAddEmpModal, setShowAddEmpModal] = useState(false);
+  const [showAddSiteModal, setShowAddSiteModal] = useState(false);
+  const [submittingModal, setSubmittingModal] = useState(false);
+
+  // New Employee Form
+  const [newEmpName, setNewEmpName] = useState('');
+  const [newEmpPhone, setNewEmpPhone] = useState('');
+  const [newEmpSiteId, setNewEmpSiteId] = useState('');
+  const [newEmpPin, setNewEmpPin] = useState('');
+
+  // New Job Site Form
+  const [newSiteName, setNewSiteName] = useState('');
+  const [newSiteAddress, setNewSiteAddress] = useState('');
+  const [newSiteLat, setNewSiteLat] = useState('25.2533');
+  const [newSiteLon, setNewSiteLon] = useState('55.3652');
+  const [newSiteRadius, setNewSiteRadius] = useState('100');
+
+  const handleCreateEmployee = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newEmpName.trim() || !newEmpPin.trim()) {
+      setActionMessage({ type: 'error', text: 'Employee Name and PIN are required' });
+      return;
+    }
+    setSubmittingModal(true);
+    try {
+      const res = await createEmployee(session.token, {
+        name: newEmpName.trim(),
+        phone: newEmpPhone.trim(),
+        role: 'Labourer',
+        siteId: newEmpSiteId,
+        pin: newEmpPin.trim(),
+      });
+      if (res.success) {
+        setActionMessage({ type: 'success', text: `Labourer ${newEmpName} registered successfully in Google Sheets!` });
+        setShowAddEmpModal(false);
+        setNewEmpName('');
+        setNewEmpPhone('');
+        setNewEmpPin('');
+        handleRefresh();
+      } else {
+        setActionMessage({ type: 'error', text: res.message || 'Failed to create employee' });
+      }
+    } catch (err: unknown) {
+      setActionMessage({ type: 'error', text: (err as Error).message });
+    } finally {
+      setSubmittingModal(false);
+    }
+  };
+
+  const handleCreateJobSite = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newSiteName.trim() || !newSiteLat || !newSiteLon) {
+      setActionMessage({ type: 'error', text: 'Site Name and GPS Coordinates are required' });
+      return;
+    }
+    setSubmittingModal(true);
+    try {
+      const res = await createJobSite(session.token, {
+        name: newSiteName.trim(),
+        address: newSiteAddress.trim(),
+        latitude: parseFloat(newSiteLat),
+        longitude: parseFloat(newSiteLon),
+        geofenceRadius: parseInt(newSiteRadius, 10) || 100,
+      });
+      if (res.success) {
+        setActionMessage({ type: 'success', text: `Job Site ${newSiteName} created successfully in Google Sheets!` });
+        setShowAddSiteModal(false);
+        setNewSiteName('');
+        setNewSiteAddress('');
+        handleRefresh();
+      } else {
+        setActionMessage({ type: 'error', text: res.message || 'Failed to create job site' });
+      }
+    } catch (err: unknown) {
+      setActionMessage({ type: 'error', text: (err as Error).message });
+    } finally {
+      setSubmittingModal(false);
+    }
+  };
 
   const loadAllData = useCallback(async () => {
     try {
@@ -338,9 +421,18 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
             {/* 3. EMPLOYEES TAB */}
             {activeTab === 'employees' && (
               <div>
-                <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300 mb-4">
-                  Registered Workforce Directory
-                </h2>
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">
+                    Registered Workforce Directory
+                  </h2>
+                  <button
+                    onClick={() => setShowAddEmpModal(true)}
+                    className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-md shadow-blue-600/30 transition-all flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <span>+</span>
+                    <span>Register Labourer</span>
+                  </button>
+                </div>
                 {employees.length === 0 ? (
                   <p className="text-sm text-slate-500 py-8 text-center">No employee records found in Google Sheets.</p>
                 ) : (
@@ -385,9 +477,18 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
             {/* 4. JOB SITES TAB */}
             {activeTab === 'sites' && (
               <div>
-                <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300 mb-4">
-                  Registered Job Sites & Geofences
-                </h2>
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">
+                    Registered Job Sites & Geofences
+                  </h2>
+                  <button
+                    onClick={() => setShowAddSiteModal(true)}
+                    className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-md shadow-blue-600/30 transition-all flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <span>+</span>
+                    <span>Add Job Site</span>
+                  </button>
+                </div>
                 {sites.length === 0 ? (
                   <p className="text-sm text-slate-500 py-8 text-center">No job sites registered in Google Sheets.</p>
                 ) : (
@@ -476,6 +577,202 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
           </>
         )}
       </main>
+
+      {/* Add Employee Modal */}
+      {showAddEmpModal && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="glass-panel bg-slate-900 border border-slate-700 rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl">
+            <h3 className="text-lg font-bold text-white mb-2">Register New Labourer</h3>
+            <p className="text-xs text-slate-400 mb-6">
+              Creates an employee record in Google Sheets with standard PBKDF2 PIN hashing (25,000 iterations).
+            </p>
+
+            <form onSubmit={handleCreateEmployee} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+                  Full Name
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Tariq Mahmoud"
+                  value={newEmpName}
+                  onChange={(e) => setNewEmpName(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+                  Phone Number
+                </label>
+                <input
+                  type="tel"
+                  placeholder="+971501234567"
+                  value={newEmpPhone}
+                  onChange={(e) => setNewEmpPhone(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+                  Assigned Job Site
+                </label>
+                <select
+                  value={newEmpSiteId}
+                  onChange={(e) => setNewEmpSiteId(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">Unassigned</option>
+                  {sites.map((s) => (
+                    <option key={s.ID} value={s.ID}>
+                      {s.Name} ({s.ID})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+                  Initial Access PIN
+                </label>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  required
+                  placeholder="4 to 6 digit PIN"
+                  value={newEmpPin}
+                  onChange={(e) => setNewEmpPin(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm font-mono tracking-widest focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div className="flex gap-3 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setShowAddEmpModal(false)}
+                  className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-slate-300 bg-slate-800 hover:bg-slate-700 border border-slate-700 transition-all cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingModal}
+                  className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 shadow-lg shadow-blue-600/30 transition-all disabled:opacity-50 cursor-pointer"
+                >
+                  {submittingModal ? 'Registering...' : 'Register Labourer'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Add Job Site Modal */}
+      {showAddSiteModal && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="glass-panel bg-slate-900 border border-slate-700 rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl">
+            <h3 className="text-lg font-bold text-white mb-2">Create New Job Site</h3>
+            <p className="text-xs text-slate-400 mb-6">
+              Defines site GPS center coordinates and geofence enforcement radius for clock-in verification.
+            </p>
+
+            <form onSubmit={handleCreateJobSite} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+                  Site Name
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Dubai Marina Tower Phase 2"
+                  value={newSiteName}
+                  onChange={(e) => setNewSiteName(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+                  Address / Location Notes
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Dubai Marina, UAE"
+                  value={newSiteAddress}
+                  onChange={(e) => setNewSiteAddress(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+                    Latitude
+                  </label>
+                  <input
+                    type="number"
+                    step="any"
+                    required
+                    placeholder="25.2533"
+                    value={newSiteLat}
+                    onChange={(e) => setNewSiteLat(e.target.value)}
+                    className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+                    Longitude
+                  </label>
+                  <input
+                    type="number"
+                    step="any"
+                    required
+                    placeholder="55.3652"
+                    value={newSiteLon}
+                    onChange={(e) => setNewSiteLon(e.target.value)}
+                    className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+                  Geofence Radius (Meters)
+                </label>
+                <input
+                  type="number"
+                  min="30"
+                  max="1000"
+                  required
+                  placeholder="100"
+                  value={newSiteRadius}
+                  onChange={(e) => setNewSiteRadius(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div className="flex gap-3 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setShowAddSiteModal(false)}
+                  className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-slate-300 bg-slate-800 hover:bg-slate-700 border border-slate-700 transition-all cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingModal}
+                  className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 shadow-lg shadow-blue-600/30 transition-all disabled:opacity-50 cursor-pointer"
+                >
+                  {submittingModal ? 'Saving...' : 'Save Job Site'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

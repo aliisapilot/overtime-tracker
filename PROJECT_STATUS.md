@@ -24,6 +24,10 @@
   - Live statistics: Total Employees, Active Job Sites, Pending Overtime, Today's Attendance.
   - Tabbed management: Overtime Authorization (with one-click approval), Attendance Ledger, Registered Workforce, Job Sites, and Audit Trail.
   - Sync Data button for instant Google Sheets refresh.
+- [x] **Leaflet + OpenStreetMap Visual Geofencing**: Added interactive OpenStreetMap visualization on Labourer Dashboard displaying assigned site marker, circular geofence boundary, live GPS location marker, and accuracy radius.
+- [x] **Workforce & Job Site Creation (Admin Portal)**:
+  - Register Labourer modal: Directly creates new employees in Google Sheets with PBKDF2 hash (25k iter).
+  - Add Job Site modal: Creates new job sites with coordinates and geofence radii directly in Google Sheets.
 - [x] **Code Quality**:
   - TypeScript strict mode passing with 0 errors (`npx tsc --noEmit`).
   - ESLint passing with 0 warnings/errors (`npm run lint`).

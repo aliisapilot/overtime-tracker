@@ -232,6 +232,34 @@ export async function getJobSites(token: string): Promise<ApiResponse<{ sites: J
 }
 
 /**
+ * Admin: Create New Employee
+ */
+export async function createEmployee(
+  token: string,
+  data: { name: string; phone: string; role?: 'Labourer' | 'Admin'; siteId?: string; pin: string }
+): Promise<ApiResponse<{ employee: EmployeeProfile }>> {
+  return sendGasRequest<{ employee: EmployeeProfile }>({
+    action: 'createEmployee',
+    token,
+    ...data,
+  });
+}
+
+/**
+ * Admin: Create New Job Site
+ */
+export async function createJobSite(
+  token: string,
+  data: { name: string; address?: string; latitude: number; longitude: number; geofenceRadius: number }
+): Promise<ApiResponse<{ site: JobSite }>> {
+  return sendGasRequest<{ site: JobSite }>({
+    action: 'createJobSite',
+    token,
+    ...data,
+  });
+}
+
+/**
  * Admin: Get All Employees
  */
 export async function getEmployees(token: string): Promise<ApiResponse<{ employees: EmployeeProfile[] }>> {
