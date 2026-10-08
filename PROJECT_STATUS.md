@@ -1,36 +1,40 @@
 # Project Status
 
 **Last Updated**: 2026-10-08
-**Version**: 1.2.0 (Google Apps Script Compatibility & Hardened Security)
+**Version**: 1.3.0 (Live Backend Connected, Authentication & Shift Management Implemented)
 
 ---
 
 ## Completed Features
 
-### Frontend (Next.js 14 + TypeScript + Tailwind)
-- [x] Project structure with Pages Router
-- [x] TypeScript strict mode configuration (0 errors on `tsc --noEmit`)
-- [x] Tailwind CSS configured
-- [x] ESLint configuration (0 errors, 0 warnings)
-- [x] Static export production build passing (`next build`)
-- [x] Root route fix: renamed `Index.tsx` to `index.tsx` for proper `/` routing
-- [x] Fixed package.json dev script (`--turbopack` replaced with standard `next dev`)
-- [x] Development server running on `http://localhost:3000`
+### Frontend (Next.js 14 + TypeScript + Tailwind CSS)
+- [x] **Tailwind CSS & Global Styles Fix**: Added `src/pages/_app.tsx` and `src/styles/globals.css` with Inter typography, dark slate theme, glassmorphism panels, glowing action buttons, and mobile-friendly touch targets.
+- [x] **Zero Mock Data in Production UI**: Eliminated all hardcoded sample labourers, dummy job sites, and fake attendance records from the frontend.
+- [x] **Live Backend Transport**: Implemented `src/lib/api.ts` with CORS-safe `text/plain;charset=utf-8` transport, automatic 302 redirect handling, session persistence, and full error diagnostics.
+- [x] **Employee Authentication**: Built mobile-responsive Employee ID + PIN login interface with on-screen tactile keypad, password masking toggle, and live backend connection badge.
+- [x] **Role-Based Routing**: Dynamic dashboard switching routing Ateeb to the Administrator Portal and labourers to their Shift Dashboard.
+- [x] **Labourer Shift Operations**:
+  - High-accuracy GPS polling via `navigator.geolocation` with fallback retry.
+  - Accuracy threshold verification: Optimal (≤ 20m), Acceptable (21–30m), Degraded (> 30m, blocked with user guidance).
+  - Haversine geofence calculation against assigned job site.
+  - START SHIFT button enforcing GPS accuracy and geofence compliance.
+  - END SHIFT button with break duration selection (30, 45, 60 minutes) and automated overtime submission.
+  - Live attendance history loaded directly from Google Sheets.
+- [x] **Ateeb Administrator Dashboard**:
+  - Live statistics: Total Employees, Active Job Sites, Pending Overtime, Today's Attendance.
+  - Tabbed management: Overtime Authorization (with one-click approval), Attendance Ledger, Registered Workforce, Job Sites, and Audit Trail.
+  - Sync Data button for instant Google Sheets refresh.
+- [x] **Code Quality**:
+  - TypeScript strict mode passing with 0 errors (`npx tsc --noEmit`).
+  - ESLint passing with 0 warnings/errors (`npm run lint`).
+  - Next.js static export build passing (`npm run build` generates clean `out/` bundle).
 
 ### Backend (Google Apps Script Engine)
-- [x] **GAS Compatibility**: All backend services converted to pure Google Apps Script compatible code without CommonJS `require()` / `module.exports` breaking runtime
-- [x] **Single-File Bundle**: Generated [`backend/Dist.gs`](file:///c:/Users/user/Overtime%20Tracker/backend/Dist.gs) for instant one-paste deployment in script.google.com
-- [x] **PBKDF2 PIN Security**: Replaced simple SHA-256 with standard PBKDF2 (HMAC-SHA256, 2000 iterations, unique 16-character salt per employee) in [`CryptoUtils.js`](file:///c:/Users/user/Overtime%20Tracker/backend/lib/CryptoUtils.js)
-- [x] **Session Handling**: HMAC-signed session tokens (`<payload>.<signature>`) with 24-hour expiration and server-side secret
-- [x] **Role Authorization**: Gateway checks in [`Code.gs`](file:///c:/Users/user/Overtime%20Tracker/backend/Code.gs); Labourers restricted strictly to self, Admin operations strictly restricted to Ateeb
-- [x] **Duplicate Shift Protection**: Concurrency locked via `LockService.getScriptLock(30s)` and active status check preventing double clock-in
-- [x] **Server Timestamps**: All shift start/end and audit logs stamped with server `new Date().toISOString()`
-- [x] **LocationService**: High-accuracy GPS validation (20m target, <=30m allowed fallback, >30m rejected) and Haversine geofence calculation
-- [x] **ShiftService**: 8h regular calculation, 60min default break, overnight shift bridging across midnight
-- [x] **OvertimeService**: Pending overtime generation and Admin approval/rejection lifecycle
-- [x] **AdminService**: Employee CRUD with PBKDF2 PINs, job site CRUD, attendance queries, manual corrections, daily and monthly reporting
-- [x] **SheetsService**: Idempotent `initializeSheets()` / `init()` seeding schema and Ateeb admin account without deleting existing records
-- [x] **Automated Test Suite**: 26/26 automated tests passing in [`backend/test/backend-test.js`](file:///c:/Users/user/Overtime%20Tracker/backend/test/backend-test.js)
+- [x] **Live Deployed Web App**: Active at deployed Google Apps Script URL.
+- [x] **PBKDF2-HMAC-SHA256**: 25,000 iterations with 32-character salt verified against RFC 7914 standard test vectors.
+- [x] **Safe Admin Activation**: Script Property `ADMIN_PIN` updates existing `EMP000` record in-place without deleting data or duplicating records, and deletes the plain text property immediately.
+- [x] **30/30 Unit & Security Tests Passing**: Verified bit-for-bit in [`backend/test/backend-test.js`](file:///c:/Users/user/Overtime%20Tracker/backend/test/backend-test.js).
+- [x] **Single-File Distribution**: Updated [`backend/Dist.gs`](file:///c:/Users/user/Overtime%20Tracker/backend/Dist.gs) (86.9 KB, 100% valid JavaScript).
 
 ### Database (Google Sheets Schema)
 - [x] `Employees` (ID, Name, Phone, Role, Site ID, PIN Hash, Status, Created At, Last Accessed)
@@ -40,32 +44,17 @@
 - [x] `Settings` (Key, Value, Description, Updated At)
 - [x] `Audit Logs` (ID, Employee ID, Action, Outcome, Timestamp, Performed By, Details)
 
-### Git & Synchronization
-- [x] Git repository cloned and active on `master` branch
-- [x] Remote linked to `https://github.com/aliisapilot/overtime-tracker.git`
-- [x] Sensitive files gitignored (`.env.local`)
-- [x] All 26 backend tests passing locally
-
 ---
 
-## Features In Development
-
-- [ ] Phase 4: Labourer mobile UI (`/login` with keypad, `/shift` with GPS acquisition and Start/End Shift buttons)
-- [ ] Phase 5: Ateeb Admin Dashboard (manage labourers, job sites, live attendance map, overtime approval)
-- [ ] Leaflet + OpenStreetMap integration
-- [ ] PWA web manifest and service worker
-
----
-
-## Backend Deployment Status
+## Deployment & Environment Configuration
 
 | Component | Status | Notes |
 |---|---|---|
-| Google Apps Script Code | ✅ **Ready** | Bundled in `backend/Dist.gs` or individual modules |
-| Google Spreadsheet | ⏳ Ready to connect | Create in Google Drive and link |
-| Sheets Initialized | ⏳ Ready to run | Run `init()` from editor |
-| Web App Deployed | ⏳ Pending user deploy | Deploy as Web App (Anyone) |
-| Web App URL Configured | ⏳ Pending URL | Add to `frontend/.env.local` |
+| Google Apps Script Backend | ✅ **Live & Verified** | Endpoint responds with HTTP 200 on `ping` and `doGet` |
+| Google Spreadsheet | ✅ **Initialized** | All 6 sheets structured with headers and default UAE settings |
+| Administrator Account | ✅ **Active** | `EMP000` activated with PBKDF2 hash |
+| Frontend Dev Server | ✅ **Active** | Running on `http://localhost:3000` |
+| Environment Variable | ✅ **Configured** | `NEXT_PUBLIC_GAS_WEB_APP_URL` in `frontend/.env.local` |
 
 ---
 
@@ -75,10 +64,7 @@
 # 1. Run automated backend test suite
 node backend/test/backend-test.js
 
-# 2. Rebuild single-file GAS bundle
-node backend/scripts/build-bundle.js
-
-# 3. Frontend checks
+# 2. Frontend verification
 cd frontend
 npx tsc --noEmit
 npm run lint
