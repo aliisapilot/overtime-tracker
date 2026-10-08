@@ -2,7 +2,7 @@
  * OVERTIME TRACKER — COMPLETE GOOGLE APPS SCRIPT BACKEND
  * Bundled for single-file deployment at script.google.com
  * Owner: Ateeb
- * Generated: 2026-10-08T16:52:06.565Z
+ * Generated: 2026-10-08T17:01:26.995Z
  */
 
 
@@ -12,7 +12,7 @@
 
 /**
  * Configuration and constants for Overtime Tracker
- * Compatible with both Google Apps Script global scope and Node.js
+ * Dual compatible with Google Apps Script global scope and Node.js
  */
 var CONFIG = {
   SESSION_TIMEOUT: 24 * 60 * 60 * 1000, // 24 hours
@@ -25,7 +25,8 @@ var CONFIG = {
   DEFAULT_GEOFENCE_RADIUS: 100, // 100m geofence default
   DEFAULT_REGULAR_HOURS: 8,
   DEFAULT_BREAK_DURATION: 60, // 60 minutes
-  PBKDF2_ITERATIONS: 2000, // Iterations for PIN hashing
+  PBKDF2_ITERATIONS: 25000, // Strengthened PBKDF2 iterations for PIN security
+  SALT_LENGTH: 32, // 256-bit salt entropy
   ADMIN_ROLE: 'Admin',
   LABOURER_ROLE: 'Labourer'
 };
@@ -39,8 +40,6 @@ var SHEETS = {
   AUDIT_LOGS: 'Audit Logs'
 };
 
-;
-}
 
 // ==========================================
 // FILE: lib/CryptoUtils.js
@@ -48,15 +47,17 @@ var SHEETS = {
 
 /**
  * Cryptographic utilities for Overtime Tracker
- * Provides PBKDF2-style iterated salted PIN hashing and signed session tokens
+ * Provides hardened PBKDF2 iterated salted PIN hashing and signed session tokens
  * Fully compatible with both Google Apps Script and Node.js
  */
 
 var _ConfigModule = (typeof CONFIG !== 'undefined') ? { CONFIG: CONFIG } : 
-  (typeof require !== 'undefined' ? require('./Config') : { CONFIG: { PBKDF2_ITERATIONS: 2000, SESSION_TIMEOUT: 86400000 } });
+  (typeof require !== 'undefined' ? require('./Config') : { CONFIG: { PBKDF2_ITERATIONS: 25000, SESSION_TIMEOUT: 86400000, SALT_LENGTH: 32 } });
 var _CONFIG = _ConfigModule.CONFIG;
 
 var CryptoUtils = (function() {
+  var _nodeRuntimeSecret = null;
+
   /**
    * Helper: compute HMAC-SHA256
    */
@@ -88,12 +89,13 @@ var CryptoUtils = (function() {
   }
 
   /**
-   * Helper: generate random hex salt
+   * Helper: generate cryptographically random hex salt
    */
   function generateSalt(length) {
-    length = length || 16;
+    length = length || _CONFIG.SALT_LENGTH || 32;
     if (typeof Utilities !== 'undefined' && Utilities.getUuid) {
-      return (Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '')).substring(0, length);
+      var uuids = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
+      return uuids.substring(0, length);
     } else {
       var crypto = require('crypto');
       return crypto.randomBytes(Math.ceil(length / 2)).toString('hex').substring(0, length);
@@ -101,7 +103,7 @@ var CryptoUtils = (function() {
   }
 
   /**
-   * Base64 encode string (URL-safe friendly)
+   * Base64 encode string (URL-safe)
    */
   function toBase64(str) {
     if (typeof Utilities !== 'undefined' && Utilities.base64EncodeWebSafe) {
@@ -128,6 +130,20 @@ var CryptoUtils = (function() {
   }
 
   /**
+   * Constant-time string comparison to prevent timing attacks
+   */
+  function safeCompare(a, b) {
+    if (!a || !b || a.length !== b.length) {
+      return false;
+    }
+    var result = 0;
+    for (var i = 0; i < a.length; i++) {
+      result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    }
+    return result === 0;
+  }
+
+  /**
    * PBKDF2 HMAC-SHA256 calculation
    */
   function pbkdf2(password, salt, iterations) {
@@ -140,9 +156,9 @@ var CryptoUtils = (function() {
   }
 
   /**
-   * Hash a PIN with PBKDF2 and a unique salt
+   * Hash a PIN with PBKDF2 (default 25,000 iterations) and a unique 256-bit salt
    * @param {string} pin - Plain text PIN
-   * @param {string} [salt] - Optional salt (generated if omitted)
+   * @param {string} [salt] - Optional salt
    * @param {number} [iterations] - Optional iterations
    * @returns {string} Stored hash in format pbkdf2:<iterations>:<salt>:<hash>
    */
@@ -150,14 +166,14 @@ var CryptoUtils = (function() {
     if (typeof pin !== 'string') {
       pin = String(pin || '');
     }
-    salt = salt || generateSalt(16);
-    iterations = iterations || _CONFIG.PBKDF2_ITERATIONS || 2000;
+    salt = salt || generateSalt(_CONFIG.SALT_LENGTH || 32);
+    iterations = iterations || _CONFIG.PBKDF2_ITERATIONS || 25000;
     var derived = pbkdf2(pin, salt, iterations);
     return 'pbkdf2:' + iterations + ':' + salt + ':' + derived;
   }
 
   /**
-   * Verify a PIN against a stored hash
+   * Verify a PIN against a stored hash using constant-time comparison
    * @param {string} pin - Plain text PIN
    * @param {string} storedHash - Stored hash string
    * @returns {{ valid: boolean, shouldUpgrade: boolean }}
@@ -178,11 +194,14 @@ var CryptoUtils = (function() {
         var salt = parts[2];
         var expectedHash = parts[3];
         var computedHash = pbkdf2(pin, salt, iterations);
-        return { valid: computedHash === expectedHash, shouldUpgrade: false };
+        var isValid = safeCompare(computedHash, expectedHash);
+        // Mark for upgrade if stored iterations are less than current standard
+        var shouldUpgrade = isValid && (iterations < (_CONFIG.PBKDF2_ITERATIONS || 25000));
+        return { valid: isValid, shouldUpgrade: shouldUpgrade };
       }
     }
 
-    // Legacy fallback 1: SHA-256 base64 digest with static salt (from early prototype)
+    // Legacy fallback: SHA-256 base64 digest with static salt (from prototype)
     try {
       var legacyInput = pin + 'salt_' + pin.length;
       var legacyHex = sha256(legacyInput);
@@ -190,16 +209,11 @@ var CryptoUtils = (function() {
         ? Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, legacyInput))
         : (typeof Buffer !== 'undefined' ? Buffer.from(legacyHex, 'hex').toString('base64') : '');
 
-      if (storedHash === legacyBase64 || storedHash === legacyHex) {
+      if (safeCompare(storedHash, legacyBase64) || safeCompare(storedHash, legacyHex)) {
         return { valid: true, shouldUpgrade: true };
       }
     } catch (e) {
       // ignore
-    }
-
-    // Legacy fallback 2: Plain mock strings (hashed_pin_001 etc)
-    if (storedHash.indexOf('hashed_pin_') === 0) {
-      return { valid: true, shouldUpgrade: true };
     }
 
     return { valid: false, shouldUpgrade: false };
@@ -221,7 +235,10 @@ var CryptoUtils = (function() {
     if (typeof process !== 'undefined' && process.env && process.env.AUTH_SECRET) {
       return process.env.AUTH_SECRET;
     }
-    return 'overtime_secret_default_key_2026_salt';
+    if (!_nodeRuntimeSecret) {
+      _nodeRuntimeSecret = generateSalt(32) + generateSalt(32);
+    }
+    return _nodeRuntimeSecret;
   }
 
   /**
@@ -267,7 +284,7 @@ var CryptoUtils = (function() {
     var secret = getAuthSecret();
     var expectedSignature = hmacSha256(encodedPayload, secret);
 
-    if (providedSignature !== expectedSignature) {
+    if (!safeCompare(providedSignature, expectedSignature)) {
       return null;
     }
 
@@ -294,7 +311,6 @@ var CryptoUtils = (function() {
     sha256: sha256
   };
 })();
-
 
 
 
@@ -375,7 +391,7 @@ var SheetsService = (function() {
       'ID', 'Name', 'Phone', 'Role', 'Site ID', 'PIN Hash', 'Status', 'Created At', 'Last Accessed'
     ]);
 
-    // 2. Job Sites sheet
+    // 2. Job Sites sheet (Headers only - NO sample production sites)
     var jobSitesSheet = this.getOrCreateSheet(_SHEETS.JOB_SITES);
     this.ensureHeaders(jobSitesSheet, [
       'ID', 'Name', 'Address', 'Latitude', 'Longitude', 'Geofence Radius', 'Status', 'Created At'
@@ -410,11 +426,8 @@ var SheetsService = (function() {
       'ID', 'Employee ID', 'Action', 'Outcome', 'Timestamp', 'Performed By', 'Details'
     ]);
 
-    // Seed default admin employee if Employees sheet is empty
-    this.seedDefaultAdmin(employeesSheet);
-
-    // Seed default job site if Job Sites sheet is empty
-    this.seedDefaultJobSite(jobSitesSheet);
+    // Seed default admin employee if Employees sheet is empty (with secure random PIN)
+    var adminInitResult = this.seedDefaultAdmin(employeesSheet);
 
     // Clean up empty default "Sheet1" if present and other sheets exist
     try {
@@ -430,7 +443,11 @@ var SheetsService = (function() {
       Logger.log('All sheets initialized successfully');
     }
 
-    return { success: true, message: 'Spreadsheet initialized successfully' };
+    return { 
+      success: true, 
+      message: 'Spreadsheet initialized successfully',
+      adminNote: adminInitResult ? adminInitResult.message : null
+    };
   };
 
   /**
@@ -487,44 +504,50 @@ var SheetsService = (function() {
   };
 
   /**
-   * Seed Ateeb as default Admin if Employees sheet is empty
+   * Seed Ateeb as default Admin with a secure unguessable random one-time PIN
    */
   SheetsServiceClass.prototype.seedDefaultAdmin = function(sheet) {
-    if (!sheet || sheet.getLastRow() > 1) return;
-    var defaultPinHash = _CryptoUtils 
-      ? _CryptoUtils.hashPin('8888') 
-      : 'pbkdf2:2000:adminseed1234:default';
+    if (!sheet || sheet.getLastRow() > 1) return null;
+
+    // Generate a secure 6-digit temporary PIN
+    var randomNum = Math.floor(100000 + Math.random() * 900000);
+    var tempPin = String(randomNum);
+
+    // Save initial PIN in script properties for secure reference by owner
+    if (typeof PropertiesService !== 'undefined' && PropertiesService.getScriptProperties) {
+      PropertiesService.getScriptProperties().setProperty('INITIAL_ADMIN_PIN', tempPin);
+    }
+
+    var adminPinHash = _CryptoUtils 
+      ? _CryptoUtils.hashPin(tempPin) 
+      : 'pbkdf2:25000:initialadminseed:default';
 
     var adminRow = [
       'EMP000',
       'Ateeb',
       '+971500000000',
       _CONFIG.ADMIN_ROLE || 'Admin',
-      'SITE001',
-      defaultPinHash,
+      '', // No hardcoded site
+      adminPinHash,
       'Active',
       new Date().toISOString(),
       ''
     ];
     sheet.getRange(2, 1, 1, adminRow.length).setValues([adminRow]);
-  };
 
-  /**
-   * Seed default Job Site if Job Sites sheet is empty
-   */
-  SheetsServiceClass.prototype.seedDefaultJobSite = function(sheet) {
-    if (!sheet || sheet.getLastRow() > 1) return;
-    var siteRow = [
-      'SITE001',
-      'Dubai Industrial Park',
-      'Dubai Industrial City, Dubai, UAE',
-      25.2533,
-      55.3652,
-      100,
-      'Active',
-      new Date().toISOString()
-    ];
-    sheet.getRange(2, 1, 1, siteRow.length).setValues([siteRow]);
+    if (typeof Logger !== 'undefined') {
+      Logger.log('================================================================');
+      Logger.log('[SECURITY ALERT] Initial Admin account created for Ateeb (EMP000)');
+      Logger.log('[SECURITY ALERT] Temporary One-Time PIN: ' + tempPin);
+      Logger.log('Please log in with this PIN and change it immediately.');
+      Logger.log('================================================================');
+    }
+
+    return {
+      created: true,
+      employeeId: 'EMP000',
+      message: 'Initial Admin account created. Check Apps Script Execution Log for temporary PIN.'
+    };
   };
 
   /**
@@ -738,7 +761,6 @@ var SheetsService = (function() {
 })();
 
 
-
 // ==========================================
 // FILE: services/LocationService.js
 // ==========================================
@@ -906,7 +928,6 @@ var LocationService = (function() {
 
   return new LocationServiceClass();
 })();
-
 
 
 // ==========================================
@@ -1272,7 +1293,6 @@ var ShiftService = (function() {
 })();
 
 
-
 // ==========================================
 // FILE: services/OvertimeService.js
 // ==========================================
@@ -1403,7 +1423,6 @@ var OvertimeService = (function() {
 
   return new OvertimeServiceClass();
 })();
-
 
 
 // ==========================================
@@ -1922,7 +1941,6 @@ var AdminService = (function() {
 })();
 
 
-
 // ==========================================
 // FILE: services/AuthService.js
 // ==========================================
@@ -2212,7 +2230,6 @@ var AuthService = (function() {
 })();
 
 
-
 // ==========================================
 // FILE: Code.gs
 // ==========================================
@@ -2254,16 +2271,7 @@ function doGet(e) {
     version: '1.2.0',
     owner: 'Ateeb',
     status: 'active',
-    timestamp: new Date().toISOString(),
-    endpoints: {
-      public: ['login', 'ping'],
-      labourer: ['getEmployeeData', 'startShift', 'endShift', 'getEmployeeShifts', 'changePin'],
-      admin: [
-        'getJobSites', 'createJobSite', 'getEmployees', 'createEmployee', 
-        'deactivateEmployee', 'getAttendance', 'correctAttendance', 'approveOvertime', 
-        'getAuditLogs', 'generateDailyReport', 'generateMonthlyReport'
-      ]
-    }
+    timestamp: new Date().toISOString()
   });
 }
 
@@ -2284,8 +2292,8 @@ function doPost(e) {
     }
 
     var action = params.action;
-    if (!action) {
-      return jsonResponse({ success: false, message: 'The "action" parameter is required' });
+    if (!action || typeof action !== 'string') {
+      return jsonResponse({ success: false, message: 'Valid "action" parameter is required' });
     }
 
     // 1. PUBLIC ACTIONS
@@ -2297,8 +2305,33 @@ function doPost(e) {
       return jsonResponse(_AuthService.login(params));
     }
 
+    // Protected init action
     if (action === 'init') {
-      // Direct spreadsheet initialization
+      var canInit = false;
+      // Allow if no employees exist yet (initial bootstrap)
+      var employees = _SheetsService.getAllEmployees();
+      if (!employees || employees.length === 0) {
+        canInit = true;
+      }
+      // Or if caller provided valid SETUP_KEY matching Script Properties
+      if (typeof PropertiesService !== 'undefined' && PropertiesService.getScriptProperties) {
+        var setupKey = PropertiesService.getScriptProperties().getProperty('SETUP_KEY');
+        if (setupKey && params.setupKey === setupKey) {
+          canInit = true;
+        }
+      }
+      // Or local Node test environment
+      if (typeof SpreadsheetApp === 'undefined') {
+        canInit = true;
+      }
+
+      if (!canInit) {
+        return jsonResponse({
+          success: false,
+          code: 403,
+          message: 'Spreadsheet is already initialized. Run init() directly from script.google.com editor.'
+        });
+      }
       return jsonResponse(_SheetsService.initializeSheets());
     }
 
@@ -2319,7 +2352,6 @@ function doPost(e) {
     // 3. LABOURER ACTIONS (Permitted for self or Admin)
     switch (action) {
       case 'getEmployeeData':
-        // Restrict employee to self unless Admin
         if (!isAdmin && params.employeeId && params.employeeId.toUpperCase() !== session.employeeId.toUpperCase()) {
           return jsonResponse({ success: false, code: 403, message: 'Forbidden: You cannot view data of another employee' });
         }
@@ -2396,7 +2428,7 @@ function doPost(e) {
     }
     return jsonResponse({
       success: false,
-      message: 'Internal server error: ' + (error.message || error)
+      message: 'A processing error occurred. Please try again.'
     });
   }
 }
@@ -2427,5 +2459,3 @@ function init() {
   }
 }
 
-;
-}

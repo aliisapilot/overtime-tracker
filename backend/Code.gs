@@ -35,16 +35,7 @@ function doGet(e) {
     version: '1.2.0',
     owner: 'Ateeb',
     status: 'active',
-    timestamp: new Date().toISOString(),
-    endpoints: {
-      public: ['login', 'ping'],
-      labourer: ['getEmployeeData', 'startShift', 'endShift', 'getEmployeeShifts', 'changePin'],
-      admin: [
-        'getJobSites', 'createJobSite', 'getEmployees', 'createEmployee', 
-        'deactivateEmployee', 'getAttendance', 'correctAttendance', 'approveOvertime', 
-        'getAuditLogs', 'generateDailyReport', 'generateMonthlyReport'
-      ]
-    }
+    timestamp: new Date().toISOString()
   });
 }
 
@@ -65,8 +56,8 @@ function doPost(e) {
     }
 
     var action = params.action;
-    if (!action) {
-      return jsonResponse({ success: false, message: 'The "action" parameter is required' });
+    if (!action || typeof action !== 'string') {
+      return jsonResponse({ success: false, message: 'Valid "action" parameter is required' });
     }
 
     // 1. PUBLIC ACTIONS
@@ -78,8 +69,33 @@ function doPost(e) {
       return jsonResponse(_AuthService.login(params));
     }
 
+    // Protected init action
     if (action === 'init') {
-      // Direct spreadsheet initialization
+      var canInit = false;
+      // Allow if no employees exist yet (initial bootstrap)
+      var employees = _SheetsService.getAllEmployees();
+      if (!employees || employees.length === 0) {
+        canInit = true;
+      }
+      // Or if caller provided valid SETUP_KEY matching Script Properties
+      if (typeof PropertiesService !== 'undefined' && PropertiesService.getScriptProperties) {
+        var setupKey = PropertiesService.getScriptProperties().getProperty('SETUP_KEY');
+        if (setupKey && params.setupKey === setupKey) {
+          canInit = true;
+        }
+      }
+      // Or local Node test environment
+      if (typeof SpreadsheetApp === 'undefined') {
+        canInit = true;
+      }
+
+      if (!canInit) {
+        return jsonResponse({
+          success: false,
+          code: 403,
+          message: 'Spreadsheet is already initialized. Run init() directly from script.google.com editor.'
+        });
+      }
       return jsonResponse(_SheetsService.initializeSheets());
     }
 
@@ -100,7 +116,6 @@ function doPost(e) {
     // 3. LABOURER ACTIONS (Permitted for self or Admin)
     switch (action) {
       case 'getEmployeeData':
-        // Restrict employee to self unless Admin
         if (!isAdmin && params.employeeId && params.employeeId.toUpperCase() !== session.employeeId.toUpperCase()) {
           return jsonResponse({ success: false, code: 403, message: 'Forbidden: You cannot view data of another employee' });
         }
@@ -177,7 +192,7 @@ function doPost(e) {
     }
     return jsonResponse({
       success: false,
-      message: 'Internal server error: ' + (error.message || error)
+      message: 'A processing error occurred. Please try again.'
     });
   }
 }

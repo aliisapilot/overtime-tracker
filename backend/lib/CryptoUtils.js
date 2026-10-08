@@ -1,14 +1,16 @@
 /**
  * Cryptographic utilities for Overtime Tracker
- * Provides PBKDF2-style iterated salted PIN hashing and signed session tokens
+ * Provides hardened PBKDF2 iterated salted PIN hashing and signed session tokens
  * Fully compatible with both Google Apps Script and Node.js
  */
 
 var _ConfigModule = (typeof CONFIG !== 'undefined') ? { CONFIG: CONFIG } : 
-  (typeof require !== 'undefined' ? require('./Config') : { CONFIG: { PBKDF2_ITERATIONS: 2000, SESSION_TIMEOUT: 86400000 } });
+  (typeof require !== 'undefined' ? require('./Config') : { CONFIG: { PBKDF2_ITERATIONS: 25000, SESSION_TIMEOUT: 86400000, SALT_LENGTH: 32 } });
 var _CONFIG = _ConfigModule.CONFIG;
 
 var CryptoUtils = (function() {
+  var _nodeRuntimeSecret = null;
+
   /**
    * Helper: compute HMAC-SHA256
    */
@@ -40,12 +42,13 @@ var CryptoUtils = (function() {
   }
 
   /**
-   * Helper: generate random hex salt
+   * Helper: generate cryptographically random hex salt
    */
   function generateSalt(length) {
-    length = length || 16;
+    length = length || _CONFIG.SALT_LENGTH || 32;
     if (typeof Utilities !== 'undefined' && Utilities.getUuid) {
-      return (Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '')).substring(0, length);
+      var uuids = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
+      return uuids.substring(0, length);
     } else {
       var crypto = require('crypto');
       return crypto.randomBytes(Math.ceil(length / 2)).toString('hex').substring(0, length);
@@ -53,7 +56,7 @@ var CryptoUtils = (function() {
   }
 
   /**
-   * Base64 encode string (URL-safe friendly)
+   * Base64 encode string (URL-safe)
    */
   function toBase64(str) {
     if (typeof Utilities !== 'undefined' && Utilities.base64EncodeWebSafe) {
@@ -80,6 +83,20 @@ var CryptoUtils = (function() {
   }
 
   /**
+   * Constant-time string comparison to prevent timing attacks
+   */
+  function safeCompare(a, b) {
+    if (!a || !b || a.length !== b.length) {
+      return false;
+    }
+    var result = 0;
+    for (var i = 0; i < a.length; i++) {
+      result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    }
+    return result === 0;
+  }
+
+  /**
    * PBKDF2 HMAC-SHA256 calculation
    */
   function pbkdf2(password, salt, iterations) {
@@ -92,9 +109,9 @@ var CryptoUtils = (function() {
   }
 
   /**
-   * Hash a PIN with PBKDF2 and a unique salt
+   * Hash a PIN with PBKDF2 (default 25,000 iterations) and a unique 256-bit salt
    * @param {string} pin - Plain text PIN
-   * @param {string} [salt] - Optional salt (generated if omitted)
+   * @param {string} [salt] - Optional salt
    * @param {number} [iterations] - Optional iterations
    * @returns {string} Stored hash in format pbkdf2:<iterations>:<salt>:<hash>
    */
@@ -102,14 +119,14 @@ var CryptoUtils = (function() {
     if (typeof pin !== 'string') {
       pin = String(pin || '');
     }
-    salt = salt || generateSalt(16);
-    iterations = iterations || _CONFIG.PBKDF2_ITERATIONS || 2000;
+    salt = salt || generateSalt(_CONFIG.SALT_LENGTH || 32);
+    iterations = iterations || _CONFIG.PBKDF2_ITERATIONS || 25000;
     var derived = pbkdf2(pin, salt, iterations);
     return 'pbkdf2:' + iterations + ':' + salt + ':' + derived;
   }
 
   /**
-   * Verify a PIN against a stored hash
+   * Verify a PIN against a stored hash using constant-time comparison
    * @param {string} pin - Plain text PIN
    * @param {string} storedHash - Stored hash string
    * @returns {{ valid: boolean, shouldUpgrade: boolean }}
@@ -130,11 +147,14 @@ var CryptoUtils = (function() {
         var salt = parts[2];
         var expectedHash = parts[3];
         var computedHash = pbkdf2(pin, salt, iterations);
-        return { valid: computedHash === expectedHash, shouldUpgrade: false };
+        var isValid = safeCompare(computedHash, expectedHash);
+        // Mark for upgrade if stored iterations are less than current standard
+        var shouldUpgrade = isValid && (iterations < (_CONFIG.PBKDF2_ITERATIONS || 25000));
+        return { valid: isValid, shouldUpgrade: shouldUpgrade };
       }
     }
 
-    // Legacy fallback 1: SHA-256 base64 digest with static salt (from early prototype)
+    // Legacy fallback: SHA-256 base64 digest with static salt (from prototype)
     try {
       var legacyInput = pin + 'salt_' + pin.length;
       var legacyHex = sha256(legacyInput);
@@ -142,16 +162,11 @@ var CryptoUtils = (function() {
         ? Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, legacyInput))
         : (typeof Buffer !== 'undefined' ? Buffer.from(legacyHex, 'hex').toString('base64') : '');
 
-      if (storedHash === legacyBase64 || storedHash === legacyHex) {
+      if (safeCompare(storedHash, legacyBase64) || safeCompare(storedHash, legacyHex)) {
         return { valid: true, shouldUpgrade: true };
       }
     } catch (e) {
       // ignore
-    }
-
-    // Legacy fallback 2: Plain mock strings (hashed_pin_001 etc)
-    if (storedHash.indexOf('hashed_pin_') === 0) {
-      return { valid: true, shouldUpgrade: true };
     }
 
     return { valid: false, shouldUpgrade: false };
@@ -173,7 +188,10 @@ var CryptoUtils = (function() {
     if (typeof process !== 'undefined' && process.env && process.env.AUTH_SECRET) {
       return process.env.AUTH_SECRET;
     }
-    return 'overtime_secret_default_key_2026_salt';
+    if (!_nodeRuntimeSecret) {
+      _nodeRuntimeSecret = generateSalt(32) + generateSalt(32);
+    }
+    return _nodeRuntimeSecret;
   }
 
   /**
@@ -219,7 +237,7 @@ var CryptoUtils = (function() {
     var secret = getAuthSecret();
     var expectedSignature = hmacSha256(encodedPayload, secret);
 
-    if (providedSignature !== expectedSignature) {
+    if (!safeCompare(providedSignature, expectedSignature)) {
       return null;
     }
 

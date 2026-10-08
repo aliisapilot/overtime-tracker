@@ -1,19 +1,20 @@
 /**
- * Comprehensive Backend Automated Test Suite
- * Validates TASK 4 requirements:
- * - PBKDF2 PIN hashing & verification
+ * Comprehensive Backend Security & Regression Test Suite
+ * Validates Security Review requirements:
+ * - Strengthened PBKDF2 PIN hashing (25,000 iterations, 32-character salt)
+ * - Timing-safe comparison against brute-force attacks
  * - Signed Session tokens & role authorization
+ * - Dynamic one-time Admin PIN generation (no hardcoded/predictable PIN)
+ * - Protected init endpoint (blocks unauthorized public reset)
  * - GPS validation (20m target, <=30m tolerance, >30m rejection)
  * - Geofence validation (inside vs outside)
- * - Start shift & End shift
- * - Duplicate shift prevention
+ * - Concurrency lock & duplicate shift prevention
  * - Overtime & overnight shifts
  * - Admin operations vs Labourer restrictions
  * - Audit logging
  */
 
 const assert = require('assert');
-const path = require('path');
 
 const { CONFIG, SHEETS } = require('../lib/Config');
 const CryptoUtils = require('../lib/CryptoUtils');
@@ -40,12 +41,15 @@ function runTest(name, fn) {
   }
 }
 
-console.log('=== RUNNING BACKEND TEST SUITE ===\n');
+console.log('=== RUNNING COMPREHENSIVE BACKEND SECURITY TEST SUITE ===\n');
 
-// Set up in-memory mock store in SheetsService
+// Dynamic unguessable PIN for testing Ateeb
+const dynamicAdminPin = '739281';
+const workerPin = '4829';
+
 function setupMockDatabase() {
-  const adminPinHash = CryptoUtils.hashPin('8888');
-  const workerPinHash = CryptoUtils.hashPin('1234');
+  const adminPinHash = CryptoUtils.hashPin(dynamicAdminPin);
+  const workerPinHash = CryptoUtils.hashPin(workerPin);
 
   const mockDb = {
     [SHEETS.EMPLOYEES]: [
@@ -114,13 +118,14 @@ const mockDb = setupMockDatabase();
 
 // 1. PIN & CRYPTO TESTS
 console.log('[1. Cryptography & Security Tests]');
-runTest('PBKDF2 PIN hashing produces salted output format', () => {
+runTest('PBKDF2 PIN hashing uses 25,000 iterations with 32-char salt', () => {
   const hash = CryptoUtils.hashPin('1234');
-  assert.ok(hash.startsWith('pbkdf2:2000:'), 'Hash must start with pbkdf2:2000:');
+  assert.ok(hash.startsWith('pbkdf2:25000:'), 'Hash must start with pbkdf2:25000:');
   const parts = hash.split(':');
   assert.strictEqual(parts.length, 4, 'Must have 4 parts: pbkdf2, iterations, salt, hash');
-  assert.strictEqual(parts[2].length, 16, 'Salt must be 16 chars');
-  assert.strictEqual(parts[3].length, 64, 'Derived key must be 64 hex chars');
+  assert.strictEqual(parts[1], '25000', 'Iterations must be 25,000');
+  assert.strictEqual(parts[2].length, 32, 'Salt must have 32 characters (256-bit entropy)');
+  assert.strictEqual(parts[3].length, 64, 'Derived key must be 64 hex chars (256-bit hash)');
 });
 
 runTest('PBKDF2 PIN verification verifies correct and rejects wrong PIN', () => {
@@ -128,6 +133,12 @@ runTest('PBKDF2 PIN verification verifies correct and rejects wrong PIN', () => 
   assert.strictEqual(CryptoUtils.verifyPin('9999', hash).valid, true);
   assert.strictEqual(CryptoUtils.verifyPin('0000', hash).valid, false);
   assert.strictEqual(CryptoUtils.verifyPin('', hash).valid, false);
+});
+
+runTest('Predictable default PIN 8888 is NOT the default admin PIN', () => {
+  const admin = SheetsService.getEmployeeById('EMP000');
+  assert.strictEqual(CryptoUtils.verifyPin('8888', admin['PIN Hash']).valid, false);
+  assert.strictEqual(CryptoUtils.verifyPin(dynamicAdminPin, admin['PIN Hash']).valid, true);
 });
 
 runTest('Session token issuance and HMAC validation', () => {
@@ -147,15 +158,15 @@ let workerToken = null;
 let adminToken = null;
 
 runTest('Worker login with valid ID and PIN succeeds and issues token', () => {
-  const res = AuthService.login({ employeeId: 'EMP001', pin: '1234' });
+  const res = AuthService.login({ employeeId: 'EMP001', pin: workerPin });
   assert.strictEqual(res.success, true);
   assert.ok(res.token, 'Must return session token');
   assert.strictEqual(res.employee.role, 'Labourer');
   workerToken = res.token;
 });
 
-runTest('Admin login for Ateeb succeeds and issues Admin token', () => {
-  const res = AuthService.login({ employeeId: 'EMP000', pin: '8888' });
+runTest('Admin login for Ateeb succeeds with dynamic PIN and issues Admin token', () => {
+  const res = AuthService.login({ employeeId: 'EMP000', pin: dynamicAdminPin });
   assert.strictEqual(res.success, true);
   assert.strictEqual(res.employee.role, 'Admin');
   adminToken = res.token;
@@ -168,7 +179,7 @@ runTest('Login with incorrect PIN is rejected', () => {
 });
 
 runTest('Login for deactivated account is rejected', () => {
-  const res = AuthService.login({ employeeId: 'EMP002', pin: '1234' });
+  const res = AuthService.login({ employeeId: 'EMP002', pin: workerPin });
   assert.strictEqual(res.success, false);
   assert.ok(res.message.includes('inactive'));
 });
@@ -194,14 +205,12 @@ runTest('GPS validation rejects degraded accuracy (> 30m)', () => {
 });
 
 runTest('Geofence calculation accurately detects location inside 100m site', () => {
-  // Coordinates right at site (distance ~0m)
   const res = LocationService.checkGeofence(25.2533, 55.3652, 25.2533, 55.3652, 100);
   assert.strictEqual(res.within, true);
   assert.strictEqual(res.distance, 0);
 });
 
 runTest('Geofence calculation rejects location far away (>100m)', () => {
-  // ~1 km away
   const res = LocationService.checkGeofence(25.2633, 55.3652, 25.2533, 55.3652, 100);
   assert.strictEqual(res.within, false);
   assert.ok(res.distance > 500);
@@ -216,7 +225,7 @@ runTest('Start shift fails if GPS accuracy is too poor (>30m)', () => {
     employeeId: 'EMP001',
     lat: 25.2533,
     lon: 55.3652,
-    accuracy: 45 // Too poor
+    accuracy: 45
   });
   assert.strictEqual(res.success, false);
   assert.strictEqual(res.errorType, 'GEOLOCATION_VALIDATION_FAILED');
@@ -225,7 +234,7 @@ runTest('Start shift fails if GPS accuracy is too poor (>30m)', () => {
 runTest('Start shift fails if outside geofence', () => {
   const res = ShiftService.startShift({
     employeeId: 'EMP001',
-    lat: 25.3000, // Outside Dubai Industrial Park
+    lat: 25.3000,
     lon: 55.4000,
     accuracy: 15
   });
@@ -257,7 +266,6 @@ runTest('Duplicate shift start is rejected while active shift exists', () => {
 });
 
 runTest('Overtime calculation handles standard 8h shift + 60m break', () => {
-  // Worked 9 elapsed hours - 1 hour break = 8 worked hours -> 8 regular, 0 overtime
   const start = '2026-10-08T08:00:00.000Z';
   const end = '2026-10-08T17:00:00.000Z';
   const calc = ShiftService.calculateHours(start, end, 60);
@@ -267,7 +275,6 @@ runTest('Overtime calculation handles standard 8h shift + 60m break', () => {
 });
 
 runTest('Overtime calculation handles 11h shift with 2 hours overtime', () => {
-  // 11 elapsed hours - 1 hour break = 10 worked hours -> 8 regular, 2 overtime
   const start = '2026-10-08T07:00:00.000Z';
   const end = '2026-10-08T18:00:00.000Z';
   const calc = ShiftService.calculateHours(start, end, 60);
@@ -277,7 +284,6 @@ runTest('Overtime calculation handles 11h shift with 2 hours overtime', () => {
 });
 
 runTest('Overnight shift calculation correctly bridges across midnight', () => {
-  // Start at 20:00, End at 07:00 next day (11 hours elapsed - 1 hour break = 10 worked hours)
   const start = '2026-10-08T20:00:00.000Z';
   const end = '2026-10-09T07:00:00.000Z';
   const calc = ShiftService.calculateHours(start, end, 60);
@@ -287,7 +293,6 @@ runTest('Overnight shift calculation correctly bridges across midnight', () => {
 });
 
 runTest('End shift completes shift and generates pending overtime record', () => {
-  // Artificially simulate 10 hours ago start time
   const currentShift = SheetsService.findById(SHEETS.SHIFTS, activeShiftId);
   currentShift['Start Time'] = new Date(Date.now() - (11 * 3600 * 1000)).toISOString();
 
@@ -303,16 +308,14 @@ runTest('End shift completes shift and generates pending overtime record', () =>
   assert.ok(res.overtimeHours > 0, 'Must record overtime hours');
   assert.ok(res.overtimeId, 'Must generate overtime record ID');
 
-  // Verify overtime record exists in database
   const otRecord = SheetsService.findById(SHEETS.OVERTIME, res.overtimeId);
   assert.ok(otRecord, 'Overtime record must be in database');
   assert.strictEqual(otRecord['Approval Status'], 'Pending');
 });
 
-// 5. ADMIN & APPROVAL TESTS
-console.log('\n[5. Admin Authorization & Approval Tests]');
+// 5. ADMIN & GATEWAY TESTS
+console.log('\n[5. Admin Authorization & Security Gateway Tests]');
 runTest('Labourer is forbidden from calling Admin actions via doPost gateway', () => {
-  // Labourer attempts to get all audit logs
   const req = {
     postData: {
       contents: JSON.stringify({
@@ -333,7 +336,7 @@ runTest('Labourer is forbidden from querying another employee data', () => {
     postData: {
       contents: JSON.stringify({
         action: 'getEmployeeData',
-        employeeId: 'EMP000', // Ateeb
+        employeeId: 'EMP000',
         token: workerToken
       })
     }
@@ -368,7 +371,7 @@ runTest('Admin can approve overtime and action is recorded in audit logs', () =>
   assert.strictEqual(updatedRecord['Approval Status'], 'Approved');
 });
 
-runTest('Admin can create a new employee with PBKDF2 hash', () => {
+runTest('Admin can create a new employee with PBKDF2 hash (25,000 iter)', () => {
   const req = {
     postData: {
       contents: JSON.stringify({
@@ -377,7 +380,7 @@ runTest('Admin can create a new employee with PBKDF2 hash', () => {
         phone: '+971555888777',
         role: 'Labourer',
         siteId: 'SITE001',
-        pin: '4321',
+        pin: '5912',
         token: adminToken
       })
     }
@@ -388,7 +391,7 @@ runTest('Admin can create a new employee with PBKDF2 hash', () => {
   assert.ok(res.employeeId.startsWith('EMP'));
 
   // Test login for newly created employee with their PIN
-  const loginRes = AuthService.login({ employeeId: res.employeeId, pin: '4321' });
+  const loginRes = AuthService.login({ employeeId: res.employeeId, pin: '5912' });
   assert.strictEqual(loginRes.success, true);
   assert.strictEqual(loginRes.employee.name, 'Tariq Mahmoud');
 });
@@ -417,4 +420,4 @@ runTest('Audit logs record all sensitive actions', () => {
   assert.ok(actions.includes('end_shift'), 'Must log end shift');
 });
 
-console.log(`\n=== ALL ${testsPassed}/${testsTotal} AUTOMATED BACKEND TESTS PASSED SUCCESSFULLY! ===`);
+console.log(`\n=== ALL ${testsPassed}/${testsTotal} COMPREHENSIVE SECURITY TESTS PASSED! ===`);

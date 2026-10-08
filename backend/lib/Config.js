@@ -1,6 +1,6 @@
 /**
  * Configuration and constants for Overtime Tracker
- * Compatible with both Google Apps Script global scope and Node.js
+ * Dual compatible with Google Apps Script global scope and Node.js
  */
 var CONFIG = {
   SESSION_TIMEOUT: 24 * 60 * 60 * 1000, // 24 hours
@@ -13,7 +13,8 @@ var CONFIG = {
   DEFAULT_GEOFENCE_RADIUS: 100, // 100m geofence default
   DEFAULT_REGULAR_HOURS: 8,
   DEFAULT_BREAK_DURATION: 60, // 60 minutes
-  PBKDF2_ITERATIONS: 2000, // Iterations for PIN hashing
+  PBKDF2_ITERATIONS: 25000, // Strengthened PBKDF2 iterations for PIN security
+  SALT_LENGTH: 32, // 256-bit salt entropy
   ADMIN_ROLE: 'Admin',
   LABOURER_ROLE: 'Labourer'
 };

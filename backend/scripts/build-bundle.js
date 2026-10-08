@@ -3,6 +3,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 
 const backendDir = path.join(__dirname, '..');
 const filesToBundle = [
@@ -28,8 +29,27 @@ filesToBundle.forEach(relPath => {
   const fullPath = path.join(backendDir, relPath);
   let content = fs.readFileSync(fullPath, 'utf8');
 
-  // Strip Node module checks from bundle
-  content = content.replace(/if\s*\(typeof\s+module\s*!==\s*'undefined'[\s\S]*?\}/g, '');
+  // Cleanly strip Node module export blocks
+  const lines = content.split(/\r?\n/);
+  const cleaned = [];
+  let inModuleExport = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed.startsWith("if (typeof module !== 'undefined'")) {
+      inModuleExport = true;
+      continue;
+    }
+    if (inModuleExport) {
+      if (trimmed === '}') {
+        inModuleExport = false;
+      }
+      continue;
+    }
+    cleaned.push(lines[i]);
+  }
+
+  content = cleaned.join('\n');
 
   bundled += '\n// ==========================================\n';
   bundled += '// FILE: ' + relPath + '\n';
@@ -39,4 +59,13 @@ filesToBundle.forEach(relPath => {
 
 const outputPath = path.join(backendDir, 'Dist.gs');
 fs.writeFileSync(outputPath, bundled, 'utf8');
-console.log('Successfully bundled', filesToBundle.length, 'files into', outputPath, '(' + (bundled.length / 1024).toFixed(1) + ' KB)');
+
+// Syntax validation
+try {
+  new vm.Script(bundled);
+  console.log('✓ Dist.gs syntax verified: 100% VALID JavaScript');
+  console.log('✓ Successfully bundled', filesToBundle.length, 'files into', outputPath, '(' + (bundled.length / 1024).toFixed(1) + ' KB)');
+} catch (syntaxErr) {
+  console.error('✗ Syntax error in bundled Dist.gs:', syntaxErr);
+  process.exit(1);
+}

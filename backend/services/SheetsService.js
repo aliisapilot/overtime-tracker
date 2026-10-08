@@ -71,7 +71,7 @@ var SheetsService = (function() {
       'ID', 'Name', 'Phone', 'Role', 'Site ID', 'PIN Hash', 'Status', 'Created At', 'Last Accessed'
     ]);
 
-    // 2. Job Sites sheet
+    // 2. Job Sites sheet (Headers only - NO sample production sites)
     var jobSitesSheet = this.getOrCreateSheet(_SHEETS.JOB_SITES);
     this.ensureHeaders(jobSitesSheet, [
       'ID', 'Name', 'Address', 'Latitude', 'Longitude', 'Geofence Radius', 'Status', 'Created At'
@@ -106,11 +106,8 @@ var SheetsService = (function() {
       'ID', 'Employee ID', 'Action', 'Outcome', 'Timestamp', 'Performed By', 'Details'
     ]);
 
-    // Seed default admin employee if Employees sheet is empty
-    this.seedDefaultAdmin(employeesSheet);
-
-    // Seed default job site if Job Sites sheet is empty
-    this.seedDefaultJobSite(jobSitesSheet);
+    // Seed default admin employee if Employees sheet is empty (with secure random PIN)
+    var adminInitResult = this.seedDefaultAdmin(employeesSheet);
 
     // Clean up empty default "Sheet1" if present and other sheets exist
     try {
@@ -126,7 +123,11 @@ var SheetsService = (function() {
       Logger.log('All sheets initialized successfully');
     }
 
-    return { success: true, message: 'Spreadsheet initialized successfully' };
+    return { 
+      success: true, 
+      message: 'Spreadsheet initialized successfully',
+      adminNote: adminInitResult ? adminInitResult.message : null
+    };
   };
 
   /**
@@ -183,44 +184,50 @@ var SheetsService = (function() {
   };
 
   /**
-   * Seed Ateeb as default Admin if Employees sheet is empty
+   * Seed Ateeb as default Admin with a secure unguessable random one-time PIN
    */
   SheetsServiceClass.prototype.seedDefaultAdmin = function(sheet) {
-    if (!sheet || sheet.getLastRow() > 1) return;
-    var defaultPinHash = _CryptoUtils 
-      ? _CryptoUtils.hashPin('8888') 
-      : 'pbkdf2:2000:adminseed1234:default';
+    if (!sheet || sheet.getLastRow() > 1) return null;
+
+    // Generate a secure 6-digit temporary PIN
+    var randomNum = Math.floor(100000 + Math.random() * 900000);
+    var tempPin = String(randomNum);
+
+    // Save initial PIN in script properties for secure reference by owner
+    if (typeof PropertiesService !== 'undefined' && PropertiesService.getScriptProperties) {
+      PropertiesService.getScriptProperties().setProperty('INITIAL_ADMIN_PIN', tempPin);
+    }
+
+    var adminPinHash = _CryptoUtils 
+      ? _CryptoUtils.hashPin(tempPin) 
+      : 'pbkdf2:25000:initialadminseed:default';
 
     var adminRow = [
       'EMP000',
       'Ateeb',
       '+971500000000',
       _CONFIG.ADMIN_ROLE || 'Admin',
-      'SITE001',
-      defaultPinHash,
+      '', // No hardcoded site
+      adminPinHash,
       'Active',
       new Date().toISOString(),
       ''
     ];
     sheet.getRange(2, 1, 1, adminRow.length).setValues([adminRow]);
-  };
 
-  /**
-   * Seed default Job Site if Job Sites sheet is empty
-   */
-  SheetsServiceClass.prototype.seedDefaultJobSite = function(sheet) {
-    if (!sheet || sheet.getLastRow() > 1) return;
-    var siteRow = [
-      'SITE001',
-      'Dubai Industrial Park',
-      'Dubai Industrial City, Dubai, UAE',
-      25.2533,
-      55.3652,
-      100,
-      'Active',
-      new Date().toISOString()
-    ];
-    sheet.getRange(2, 1, 1, siteRow.length).setValues([siteRow]);
+    if (typeof Logger !== 'undefined') {
+      Logger.log('================================================================');
+      Logger.log('[SECURITY ALERT] Initial Admin account created for Ateeb (EMP000)');
+      Logger.log('[SECURITY ALERT] Temporary One-Time PIN: ' + tempPin);
+      Logger.log('Please log in with this PIN and change it immediately.');
+      Logger.log('================================================================');
+    }
+
+    return {
+      created: true,
+      employeeId: 'EMP000',
+      message: 'Initial Admin account created. Check Apps Script Execution Log for temporary PIN.'
+    };
   };
 
   /**
