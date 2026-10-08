@@ -148,66 +148,46 @@ function setupMockDatabase() {
 
 setupMockDatabase();
 
-// 2. ONE-TIME ADMIN SETUP FLOW TESTS
-console.log('\n[2. Secure One-Time Administrator Bootstrap Setup Tests]');
+// 2. ONE-TIME DIRECT ADMIN SETUP TESTS
+console.log('\n[2. Secure Direct Administrator Bootstrap Setup Tests]');
 runTest('Login for PendingSetup admin account is blocked', () => {
   const res = AuthService.login({ employeeId: 'EMP000', pin: '8888' });
   assert.strictEqual(res.success, false);
   assert.ok(res.message.includes('inactive') || res.message.includes('contact administrator'));
 });
 
-runTest('setupAdmin with invalid token is rejected with 403', () => {
-  const req = {
+runTest('Remote setupAdmin or init attempts via doPost are rejected as unknown actions', () => {
+  const reqSetup = {
     postData: {
       contents: JSON.stringify({
         action: 'setupAdmin',
-        setupToken: 'wrong_fake_token',
         newPin: '948123'
       })
     }
   };
-  const rawRes = Code.doPost(req);
+  const rawRes = Code.doPost(reqSetup);
   const res = (rawRes && typeof rawRes.getContent === 'function') ? JSON.parse(rawRes.getContent()) : rawRes;
   assert.strictEqual(res.success, false);
-  assert.strictEqual(res.code, 403);
+  assert.strictEqual(res.code, 401);
+  assert.ok(res.message.includes('Session token is missing') || res.message.includes('Unauthorized'));
 });
 
 const chosenAdminPin = '948123';
-runTest('setupAdmin with valid token activates admin and sets private PIN', () => {
-  const req = {
-    postData: {
-      contents: JSON.stringify({
-        action: 'setupAdmin',
-        setupToken: validSetupToken,
-        newPin: chosenAdminPin
-      })
-    }
-  };
-  const rawRes = Code.doPost(req);
-  const res = (rawRes && typeof rawRes.getContent === 'function') ? JSON.parse(rawRes.getContent()) : rawRes;
-  assert.strictEqual(res.success, true);
-  assert.ok(res.message.includes('activated'));
+runTest('Direct initialization with ADMIN_PIN property activates admin and securely removes plain text property', () => {
+  // Simulate setting ADMIN_PIN in Script Properties
+  SheetsService.setMockAdminPin(chosenAdminPin);
+  
+  // Run direct init
+  const initResult = SheetsService.seedDefaultAdmin(null);
+  assert.strictEqual(initResult.created, true);
 
   // Verify status in database
   const admin = SheetsService.getEmployeeById('EMP000');
   assert.strictEqual(admin.Status, 'Active');
   assert.ok(admin['PIN Hash'].startsWith('pbkdf2:25000:'));
-});
 
-runTest('One-time setup token is destroyed and cannot be reused', () => {
-  const req = {
-    postData: {
-      contents: JSON.stringify({
-        action: 'setupAdmin',
-        setupToken: validSetupToken,
-        newPin: '111111'
-      })
-    }
-  };
-  const rawRes = Code.doPost(req);
-  const res = (rawRes && typeof rawRes.getContent === 'function') ? JSON.parse(rawRes.getContent()) : rawRes;
-  assert.strictEqual(res.success, false);
-  assert.strictEqual(res.code, 403);
+  // Verify plain text property is deleted (mockAdminPin is cleared)
+  assert.strictEqual(SheetsService._mockAdminPin, null);
 });
 
 // 3. AUTHENTICATION & SESSION TESTS

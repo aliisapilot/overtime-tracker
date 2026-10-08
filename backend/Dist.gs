@@ -2,7 +2,7 @@
  * OVERTIME TRACKER — COMPLETE GOOGLE APPS SCRIPT BACKEND
  * Bundled for single-file deployment at script.google.com
  * Owner: Ateeb
- * Generated: 2026-10-08T17:07:12.834Z
+ * Generated: 2026-10-08T18:10:14.847Z
  */
 
 
@@ -560,40 +560,88 @@ var SheetsService = (function() {
   };
 
   /**
-   * Seed Ateeb as default Admin in PendingSetup state with a one-time setup token
+   * Seed Ateeb as default Admin using ADMIN_PIN configured in Script Properties
+   * Completely avoids logging PINs or setup tokens to Execution Logs
    */
   SheetsServiceClass.prototype.seedDefaultAdmin = function(sheet) {
-    if (!sheet || sheet.getLastRow() > 1) return null;
-
-    // Generate cryptographically random 64-character one-time setup token
-    var setupToken = _CryptoUtils 
-      ? (_CryptoUtils.generateSalt(32) + _CryptoUtils.generateSalt(32))
-      : 'setup_token_placeholder';
-
-    // Store one-time setup token in server Script Properties
-    if (typeof PropertiesService !== 'undefined' && PropertiesService.getScriptProperties) {
-      PropertiesService.getScriptProperties().setProperty('ONE_TIME_SETUP_TOKEN', setupToken);
+    if (!sheet && !this._mockData) return null;
+    
+    // Check if EMP000 already exists
+    var existingAdmin = this.findById(_SHEETS.EMPLOYEES, 'EMP000');
+    if (existingAdmin && existingAdmin.Status === 'Active') {
+      return { created: false, message: 'Admin account EMP000 is already active.' };
     }
 
-    var adminRow = [
-      'EMP000',
-      'Ateeb',
-      '+971500000000',
-      _CONFIG.ADMIN_ROLE || 'Admin',
-      '',
-      'SETUP_PENDING',
-      'PendingSetup',
-      new Date().toISOString(),
-      ''
-    ];
-    sheet.getRange(2, 1, 1, adminRow.length).setValues([adminRow]);
+    var configuredPin = null;
+    if (typeof PropertiesService !== 'undefined' && PropertiesService.getScriptProperties) {
+      var props = PropertiesService.getScriptProperties();
+      configuredPin = props.getProperty('ADMIN_PIN');
+    } else if (this._mockAdminPin) {
+      configuredPin = this._mockAdminPin;
+    }
 
-    return {
-      created: true,
-      employeeId: 'EMP000',
-      setupToken: setupToken,
-      message: 'Initial Admin record created in PendingSetup state. One-time setup token generated.'
-    };
+    if (!configuredPin) {
+      if (typeof Logger !== 'undefined') {
+        Logger.log('[SECURITY NOTICE] To activate Administrator account (EMP000), set Script Property "ADMIN_PIN" in Project Settings and run init().');
+      }
+      if (!existingAdmin) {
+        var placeholder = {
+          ID: 'EMP000',
+          Name: 'Ateeb',
+          Phone: '+971500000000',
+          Role: _CONFIG.ADMIN_ROLE || 'Admin',
+          'Site ID': '',
+          'PIN Hash': 'PENDING_PIN_CONFIGURATION',
+          Status: 'PendingSetup',
+          'Created At': new Date().toISOString(),
+          'Last Accessed': ''
+        };
+        this.appendRow(_SHEETS.EMPLOYEES, placeholder);
+      }
+      return { created: false, message: 'Admin account pending setup. Add Script Property ADMIN_PIN and re-run init().' };
+    }
+
+    // PIN is present in Script Properties: hash with standard PBKDF2 (25k iter, 32-char salt)
+    var pinHash = _CryptoUtils.hashPin(configuredPin);
+
+    if (existingAdmin) {
+      this.updateRow(_SHEETS.EMPLOYEES, 'EMP000', {
+        'PIN Hash': pinHash,
+        Status: 'Active'
+      });
+    } else {
+      var adminData = {
+        ID: 'EMP000',
+        Name: 'Ateeb',
+        Phone: '+971500000000',
+        Role: _CONFIG.ADMIN_ROLE || 'Admin',
+        'Site ID': '',
+        'PIN Hash': pinHash,
+        Status: 'Active',
+        'Created At': new Date().toISOString(),
+        'Last Accessed': ''
+      };
+      this.appendRow(_SHEETS.EMPLOYEES, adminData);
+    }
+
+    // Immediately and securely delete plain text ADMIN_PIN property so it never persists
+    if (typeof PropertiesService !== 'undefined' && PropertiesService.getScriptProperties) {
+      PropertiesService.getScriptProperties().deleteProperty('ADMIN_PIN');
+    }
+    this._mockAdminPin = null;
+
+    if (typeof Logger !== 'undefined') {
+      Logger.log('[SECURITY] Administrator account (EMP000) successfully activated. The plain text ADMIN_PIN property has been securely deleted.');
+    }
+
+    return { created: true, message: 'Administrator account EMP000 successfully activated.' };
+  };
+
+  /**
+   * Set mock admin PIN for automated tests
+   */
+  SheetsServiceClass.prototype.setMockAdminPin = function(pin) {
+    this._mockAdminPin = pin;
   };
 
   /**
@@ -2405,47 +2453,13 @@ function doPost(e) {
       return jsonResponse({ success: false, message: 'Valid "action" parameter is required' });
     }
 
-    // 1. PUBLIC ACTIONS
+    // 1. PUBLIC ACTIONS (ping and login only)
     if (action === 'ping') {
       return jsonResponse({ success: true, message: 'pong', timestamp: new Date().toISOString() });
     }
 
     if (action === 'login') {
       return jsonResponse(_AuthService.login(params));
-    }
-
-    if (action === 'setupAdmin') {
-      return jsonResponse(_AuthService.setupAdmin(params));
-    }
-
-    // Protected init action
-    if (action === 'init') {
-      var canInit = false;
-      // Allow if no employees exist yet (initial bootstrap)
-      var employees = _SheetsService.getAllEmployees();
-      if (!employees || employees.length === 0) {
-        canInit = true;
-      }
-      // Or if caller provided valid SETUP_KEY matching Script Properties
-      if (typeof PropertiesService !== 'undefined' && PropertiesService.getScriptProperties) {
-        var setupKey = PropertiesService.getScriptProperties().getProperty('SETUP_KEY');
-        if (setupKey && params.setupKey === setupKey) {
-          canInit = true;
-        }
-      }
-      // Or local Node test environment
-      if (typeof SpreadsheetApp === 'undefined') {
-        canInit = true;
-      }
-
-      if (!canInit) {
-        return jsonResponse({
-          success: false,
-          code: 403,
-          message: 'Spreadsheet is already initialized. Run init() directly from script.google.com editor.'
-        });
-      }
-      return jsonResponse(_SheetsService.initializeSheets());
     }
 
     // 2. AUTHENTICATION GATEWAY

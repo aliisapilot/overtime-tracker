@@ -60,47 +60,13 @@ function doPost(e) {
       return jsonResponse({ success: false, message: 'Valid "action" parameter is required' });
     }
 
-    // 1. PUBLIC ACTIONS
+    // 1. PUBLIC ACTIONS (ping and login only)
     if (action === 'ping') {
       return jsonResponse({ success: true, message: 'pong', timestamp: new Date().toISOString() });
     }
 
     if (action === 'login') {
       return jsonResponse(_AuthService.login(params));
-    }
-
-    if (action === 'setupAdmin') {
-      return jsonResponse(_AuthService.setupAdmin(params));
-    }
-
-    // Protected init action
-    if (action === 'init') {
-      var canInit = false;
-      // Allow if no employees exist yet (initial bootstrap)
-      var employees = _SheetsService.getAllEmployees();
-      if (!employees || employees.length === 0) {
-        canInit = true;
-      }
-      // Or if caller provided valid SETUP_KEY matching Script Properties
-      if (typeof PropertiesService !== 'undefined' && PropertiesService.getScriptProperties) {
-        var setupKey = PropertiesService.getScriptProperties().getProperty('SETUP_KEY');
-        if (setupKey && params.setupKey === setupKey) {
-          canInit = true;
-        }
-      }
-      // Or local Node test environment
-      if (typeof SpreadsheetApp === 'undefined') {
-        canInit = true;
-      }
-
-      if (!canInit) {
-        return jsonResponse({
-          success: false,
-          code: 403,
-          message: 'Spreadsheet is already initialized. Run init() directly from script.google.com editor.'
-        });
-      }
-      return jsonResponse(_SheetsService.initializeSheets());
     }
 
     // 2. AUTHENTICATION GATEWAY
