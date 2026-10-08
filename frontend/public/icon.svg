@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e3a8a"/>
+      <stop offset="50%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#4f46e5"/>
+    </linearGradient>
+    <linearGradient id="shieldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#1d4ed8"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="15" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+
+  <!-- Background rounded app icon -->
+  <rect width="512" height="512" rx="112" fill="#0b0f19"/>
+  <rect x="24" y="24" width="464" height="464" rx="96" fill="url(#bgGrad)" opacity="0.25"/>
+
+  <!-- Shield Base -->
+  <path d="M256 64 C330 110 400 110 400 110 C400 280 340 380 256 432 C172 380 112 280 112 110 C112 110 182 110 256 64 Z" 
+        fill="url(#shieldGrad)" stroke="#60a5fa" stroke-width="8" filter="url(#glow)"/>
+
+  <!-- Clock Circle inside Shield -->
+  <circle cx="256" cy="240" r="85" fill="#0f172a" stroke="#93c5fd" stroke-width="8"/>
+
+  <!-- Clock markings -->
+  <circle cx="256" cy="170" r="4" fill="#93c5fd"/>
+  <circle cx="256" cy="310" r="4" fill="#93c5fd"/>
+  <circle cx="186" cy="240" r="4" fill="#93c5fd"/>
+  <circle cx="326" cy="240" r="4" fill="#93c5fd"/>
+
+  <!-- Clock hands pointing to 10:10 (precision shift time) -->
+  <line x1="256" y1="240" x2="210" y2="200" stroke="#38bdf8" stroke-width="8" stroke-linecap="round"/>
+  <line x1="256" y1="240" x2="295" y2="195" stroke="#34d399" stroke-width="6" stroke-linecap="round"/>
+  <circle cx="256" cy="240" r="8" fill="#ffffff"/>
+
+  <!-- GPS Pin / Pulse element at base -->
+  <circle cx="256" cy="380" r="14" fill="#10b981" filter="url(#glow)"/>
+  <circle cx="256" cy="380" r="24" fill="none" stroke="#34d399" stroke-width="3" opacity="0.6"/>
+</svg>

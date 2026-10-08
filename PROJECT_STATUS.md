@@ -28,6 +28,8 @@
 - [x] **Workforce & Job Site Creation (Admin Portal)**:
   - Register Labourer modal: Directly creates new employees in Google Sheets with PBKDF2 hash (25k iter).
   - Add Job Site modal: Creates new job sites with coordinates and geofence radii directly in Google Sheets.
+- [x] **PWA Mobile Application Support**: Configured Web App Manifest (`manifest.json`), high-resolution SVG app icon (`icon.svg`), standalone display tags, and service worker (`sw.js`) for mobile home-screen installation.
+- [x] **Attendance CSV Export**: One-click download of attendance shifts into a formatted `.csv` file for payroll processing.
 - [x] **Code Quality**:
   - TypeScript strict mode passing with 0 errors (`npx tsc --noEmit`).
   - ESLint passing with 0 warnings/errors (`npm run lint`).

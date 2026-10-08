@@ -143,6 +143,32 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
     }
   };
 
+  const handleExportCsv = () => {
+    if (attendanceList.length === 0) return;
+    const headers = ['Shift ID', 'Employee ID', 'Site ID', 'Start Time', 'End Time', 'Regular Hours', 'Overtime Hours', 'Status'];
+    const rows = attendanceList.map((att) => [
+      att.ID,
+      att['Employee ID'],
+      att['Site ID'],
+      att['Start Time'],
+      att['End Time'] || '',
+      att['Regular Hours'] || 0,
+      att['Overtime Hours'] || 0,
+      att.Status,
+    ]);
+
+    const csvContent =
+      'data:text/csv;charset=utf-8,' +
+      [headers.join(','), ...rows.map((e) => e.join(','))].join('\n');
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute('download', `attendance_report_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   const loadAllData = useCallback(async () => {
     try {
       const [empRes, sitesRes, otRes, attRes, auditRes] = await Promise.all([
@@ -362,9 +388,20 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
             {/* 2. ATTENDANCE TAB */}
             {activeTab === 'attendance' && (
               <div>
-                <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300 mb-4">
-                  Attendance & Shift Ledger
-                </h2>
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">
+                    Attendance & Shift Ledger
+                  </h2>
+                  {attendanceList.length > 0 && (
+                    <button
+                      onClick={handleExportCsv}
+                      className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-blue-400 hover:text-blue-300 border border-slate-700 text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer shadow-sm"
+                    >
+                      <span>📥</span>
+                      <span>Export Attendance CSV</span>
+                    </button>
+                  )}
+                </div>
                 {attendanceList.length === 0 ? (
                   <p className="text-sm text-slate-500 py-8 text-center">No attendance shifts recorded for today yet.</p>
                 ) : (
