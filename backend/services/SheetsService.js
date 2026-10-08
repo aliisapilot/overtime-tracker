@@ -1,53 +1,84 @@
-const CONFIG = require('./Config');
-const SHEETS = CONFIG.SHEETS;
-
 /**
  * Google Sheets Service
  * Handles all interactions with Google Sheets database
+ * Dual compatible with Google Apps Script and Node.js
  */
-class SheetsService {
+
+var _ConfigModule = (typeof CONFIG !== 'undefined' && typeof SHEETS !== 'undefined') 
+  ? { CONFIG: CONFIG, SHEETS: SHEETS } 
+  : (typeof require !== 'undefined' ? require('../lib/Config') : { CONFIG: {}, SHEETS: {} });
+
+var _CONFIG = _ConfigModule.CONFIG;
+var _SHEETS = _ConfigModule.SHEETS;
+
+var _CryptoUtils = (typeof CryptoUtils !== 'undefined')
+  ? CryptoUtils
+  : (typeof require !== 'undefined' ? require('../lib/CryptoUtils') : null);
+
+var SheetsService = (function() {
+  function SheetsServiceClass() {
+    this._mockData = null; // Used for local Node tests
+  }
+
+  /**
+   * Set mock data for local automated testing
+   */
+  SheetsServiceClass.prototype.setMockData = function(data) {
+    this._mockData = data;
+  };
+
   /**
    * Get the active spreadsheet
    * @returns {GoogleAppsScript.Spreadsheet.Spreadsheet}
    */
-  getSpreadsheet() {
-    return SpreadsheetApp.getActiveSpreadsheet();
-  }
+  SheetsServiceClass.prototype.getSpreadsheet = function() {
+    if (typeof SpreadsheetApp !== 'undefined') {
+      return SpreadsheetApp.getActiveSpreadsheet();
+    }
+    return null;
+  };
 
   /**
    * Get a sheet by name, create if it doesn't exist
    * @param {string} sheetName
    * @returns {GoogleAppsScript.Spreadsheet.Sheet}
    */
-  getOrCreateSheet(sheetName) {
-    const ss = this.getSpreadsheet();
-    let sheet = ss.getSheetByName(sheetName);
+  SheetsServiceClass.prototype.getOrCreateSheet = function(sheetName) {
+    var ss = this.getSpreadsheet();
+    if (!ss) return null;
+    var sheet = ss.getSheetByName(sheetName);
     if (!sheet) {
       sheet = ss.insertSheet(sheetName);
     }
     return sheet;
-  }
+  };
 
   /**
-   * Initialize all required sheets with headers
+   * Initialize all required sheets with headers and default records
    */
-  initializeSheets() {
-    const ss = this.getSpreadsheet();
+  SheetsServiceClass.prototype.initializeSheets = function() {
+    var ss = this.getSpreadsheet();
+    if (!ss) {
+      if (typeof Logger !== 'undefined') {
+        Logger.log('SpreadsheetApp not available - mock or local environment');
+      }
+      return { success: true, message: 'Local/mock environment initialization' };
+    }
 
-    // Employees sheet
-    const employeesSheet = this.getOrCreateSheet(SHEETS.EMPLOYEES);
+    // 1. Employees sheet
+    var employeesSheet = this.getOrCreateSheet(_SHEETS.EMPLOYEES);
     this.ensureHeaders(employeesSheet, [
       'ID', 'Name', 'Phone', 'Role', 'Site ID', 'PIN Hash', 'Status', 'Created At', 'Last Accessed'
     ]);
 
-    // Job Sites sheet
-    const jobSitesSheet = this.getOrCreateSheet(SHEETS.JOB_SITES);
+    // 2. Job Sites sheet
+    var jobSitesSheet = this.getOrCreateSheet(_SHEETS.JOB_SITES);
     this.ensureHeaders(jobSitesSheet, [
       'ID', 'Name', 'Address', 'Latitude', 'Longitude', 'Geofence Radius', 'Status', 'Created At'
     ]);
 
-    // Shifts sheet
-    const shiftsSheet = this.getOrCreateSheet(SHEETS.SHIFTS);
+    // 3. Shifts sheet
+    var shiftsSheet = this.getOrCreateSheet(_SHEETS.SHIFTS);
     this.ensureHeaders(shiftsSheet, [
       'ID', 'Employee ID', 'Site ID', 'Start Time', 'End Time',
       'Start Latitude', 'Start Longitude', 'Start Accuracy',
@@ -55,53 +86,87 @@ class SheetsService {
       'Break Minutes', 'Regular Hours', 'Overtime Hours', 'Status', 'Created At'
     ]);
 
-    // Overtime sheet
-    const overtimeSheet = this.getOrCreateSheet(SHEETS.OVERTIME);
+    // 4. Overtime sheet
+    var overtimeSheet = this.getOrCreateSheet(_SHEETS.OVERTIME);
     this.ensureHeaders(overtimeSheet, [
       'ID', 'Shift ID', 'Employee ID', 'Date', 'Overtime Hours',
       'Approval Status', 'Approved By', 'Approved At', 'Created At'
     ]);
 
-    // Settings sheet
-    const settingsSheet = this.getOrCreateSheet(SHEETS.SETTINGS);
+    // 5. Settings sheet
+    var settingsSheet = this.getOrCreateSheet(_SHEETS.SETTINGS);
     this.ensureHeaders(settingsSheet, [
       'Key', 'Value', 'Description', 'Updated At'
     ]);
     this.initializeDefaultSettings(settingsSheet);
 
-    // Audit Logs sheet
-    const auditLogsSheet = this.getOrCreateSheet(SHEETS.AUDIT_LOGS);
+    // 6. Audit Logs sheet
+    var auditLogsSheet = this.getOrCreateSheet(_SHEETS.AUDIT_LOGS);
     this.ensureHeaders(auditLogsSheet, [
       'ID', 'Employee ID', 'Action', 'Outcome', 'Timestamp', 'Performed By', 'Details'
     ]);
 
-    Logger.log('All sheets initialized successfully');
-  }
+    // Seed default admin employee if Employees sheet is empty
+    this.seedDefaultAdmin(employeesSheet);
+
+    // Seed default job site if Job Sites sheet is empty
+    this.seedDefaultJobSite(jobSitesSheet);
+
+    // Clean up empty default "Sheet1" if present and other sheets exist
+    try {
+      var defaultSheet = ss.getSheetByName('Sheet1');
+      if (defaultSheet && ss.getSheets().length > 1 && defaultSheet.getLastRow() === 0) {
+        ss.deleteSheet(defaultSheet);
+      }
+    } catch (e) {
+      // Ignore sheet deletion error
+    }
+
+    if (typeof Logger !== 'undefined') {
+      Logger.log('All sheets initialized successfully');
+    }
+
+    return { success: true, message: 'Spreadsheet initialized successfully' };
+  };
 
   /**
-   * Ensure sheet has required headers
-   * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
-   * @param {string[]} headers
+   * Ensure sheet has required headers without deleting data
    */
-  ensureHeaders(sheet, headers) {
-    const range = sheet.getRange(1, 1, 1, headers.length);
-    const existingHeaders = range.getValues()[0];
-    
-    const needsUpdate = headers.some((h, i) => existingHeaders[i] !== h);
-    if (needsUpdate || existingHeaders.every(h => h === '')) {
+  SheetsServiceClass.prototype.ensureHeaders = function(sheet, headers) {
+    if (!sheet) return;
+    var lastRow = sheet.getLastRow();
+    var lastCol = sheet.getLastColumn();
+
+    if (lastRow === 0 || lastCol === 0) {
+      var range = sheet.getRange(1, 1, 1, headers.length);
       range.setValues([headers]);
       range.setFontWeight('bold');
-      range.setBackground('#4285f4');
+      range.setBackground('#1e3a8a'); // Professional dark navy
       range.setFontColor('#ffffff');
+      sheet.setFrozenRows(1);
+      return;
     }
-  }
+
+    var range = sheet.getRange(1, 1, 1, Math.max(lastCol, headers.length));
+    var existingHeaders = range.getValues()[0];
+    var isBlank = existingHeaders.every(function(h) { return h === ''; });
+
+    if (isBlank) {
+      var headerRange = sheet.getRange(1, 1, 1, headers.length);
+      headerRange.setValues([headers]);
+      headerRange.setFontWeight('bold');
+      headerRange.setBackground('#1e3a8a');
+      headerRange.setFontColor('#ffffff');
+      sheet.setFrozenRows(1);
+    }
+  };
 
   /**
-   * Initialize default settings
-   * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
+   * Initialize default settings if empty
    */
-  initializeDefaultSettings(sheet) {
-    const defaults = [
+  SheetsServiceClass.prototype.initializeDefaultSettings = function(sheet) {
+    if (!sheet) return;
+    var defaults = [
       ['companyName', 'UAE Labour Management', 'Company name for reports', new Date().toISOString()],
       ['timezone', 'Asia/Dubai', 'IANA timezone identifier', new Date().toISOString()],
       ['regularHours', '8', 'Regular working hours per day', new Date().toISOString()],
@@ -112,31 +177,78 @@ class SheetsService {
       ['gpsRetryAttempts', '3', 'Number of GPS retry attempts', new Date().toISOString()],
     ];
 
-    const existingData = sheet.getDataRange().getValues();
-    if (existingData.length <= 1) {
+    if (sheet.getLastRow() <= 1) {
       sheet.getRange(2, 1, defaults.length, 4).setValues(defaults);
     }
-  }
+  };
 
   /**
-   * Get all rows from a sheet as objects
+   * Seed Ateeb as default Admin if Employees sheet is empty
+   */
+  SheetsServiceClass.prototype.seedDefaultAdmin = function(sheet) {
+    if (!sheet || sheet.getLastRow() > 1) return;
+    var defaultPinHash = _CryptoUtils 
+      ? _CryptoUtils.hashPin('8888') 
+      : 'pbkdf2:2000:adminseed1234:default';
+
+    var adminRow = [
+      'EMP000',
+      'Ateeb',
+      '+971500000000',
+      _CONFIG.ADMIN_ROLE || 'Admin',
+      'SITE001',
+      defaultPinHash,
+      'Active',
+      new Date().toISOString(),
+      ''
+    ];
+    sheet.getRange(2, 1, 1, adminRow.length).setValues([adminRow]);
+  };
+
+  /**
+   * Seed default Job Site if Job Sites sheet is empty
+   */
+  SheetsServiceClass.prototype.seedDefaultJobSite = function(sheet) {
+    if (!sheet || sheet.getLastRow() > 1) return;
+    var siteRow = [
+      'SITE001',
+      'Dubai Industrial Park',
+      'Dubai Industrial City, Dubai, UAE',
+      25.2533,
+      55.3652,
+      100,
+      'Active',
+      new Date().toISOString()
+    ];
+    sheet.getRange(2, 1, 1, siteRow.length).setValues([siteRow]);
+  };
+
+  /**
+   * Get all rows from a sheet as plain objects
    * @param {string} sheetName
    * @returns {Object[]}
    */
-  getAllRows(sheetName) {
-    const sheet = this.getOrCreateSheet(sheetName);
-    const data = sheet.getDataRange().getValues();
+  SheetsServiceClass.prototype.getAllRows = function(sheetName) {
+    if (this._mockData && this._mockData[sheetName]) {
+      return this._mockData[sheetName];
+    }
+
+    var sheet = this.getOrCreateSheet(sheetName);
+    if (!sheet) return [];
+    var data = sheet.getDataRange().getValues();
     if (data.length <= 1) return [];
-    
-    const headers = data[0];
-    return data.slice(1).map(row => {
-      const obj = {};
-      headers.forEach((header, i) => {
-        obj[header] = row[i];
+
+    var headers = data[0];
+    return data.slice(1).map(function(row) {
+      var obj = {};
+      headers.forEach(function(header, i) {
+        if (header) {
+          obj[header] = row[i];
+        }
       });
       return obj;
     });
-  }
+  };
 
   /**
    * Find a row by ID
@@ -144,25 +256,31 @@ class SheetsService {
    * @param {string} id
    * @returns {Object|null}
    */
-  findById(sheetName, id) {
-    const rows = this.getAllRows(sheetName);
-    return rows.find(row => row.ID === id) || null;
-  }
+  SheetsServiceClass.prototype.findById = function(sheetName, id) {
+    var rows = this.getAllRows(sheetName);
+    return rows.find(function(row) { return String(row.ID) === String(id); }) || null;
+  };
 
   /**
    * Append a new row
    * @param {string} sheetName
    * @param {Object} data
-   * @returns {Object} The created row with ID
+   * @returns {Object}
    */
-  appendRow(sheetName, data) {
-    const sheet = this.getOrCreateSheet(sheetName);
-    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-    const rowData = headers.map(h => data[h] ?? '');
-    const newRow = sheet.getLastRow() + 1;
+  SheetsServiceClass.prototype.appendRow = function(sheetName, data) {
+    if (this._mockData) {
+      if (!this._mockData[sheetName]) this._mockData[sheetName] = [];
+      this._mockData[sheetName].push(Object.assign({}, data));
+      return data;
+    }
+
+    var sheet = this.getOrCreateSheet(sheetName);
+    var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    var rowData = headers.map(function(h) { return data[h] !== undefined ? data[h] : ''; });
+    var newRow = sheet.getLastRow() + 1;
     sheet.getRange(newRow, 1, 1, rowData.length).setValues([rowData]);
     return this.findById(sheetName, data.ID);
-  }
+  };
 
   /**
    * Update a row by ID
@@ -171,156 +289,150 @@ class SheetsService {
    * @param {Object} data
    * @returns {boolean}
    */
-  updateRow(sheetName, id, data) {
-    const sheet = this.getOrCreateSheet(sheetName);
-    const dataRange = sheet.getDataRange();
-    const values = dataRange.getValues();
-    const headers = values[0];
-    
-    for (let i = 1; i < values.length; i++) {
-      if (values[i][0] === id) {
-        const rowData = headers.map(h => data[h] ?? values[i][headers.indexOf(h)]);
+  SheetsServiceClass.prototype.updateRow = function(sheetName, id, data) {
+    if (this._mockData && this._mockData[sheetName]) {
+      var index = this._mockData[sheetName].findIndex(function(r) { return String(r.ID) === String(id); });
+      if (index !== -1) {
+        Object.assign(this._mockData[sheetName][index], data);
+        return true;
+      }
+      return false;
+    }
+
+    var sheet = this.getOrCreateSheet(sheetName);
+    if (!sheet) return false;
+    var dataRange = sheet.getDataRange();
+    var values = dataRange.getValues();
+    if (values.length <= 1) return false;
+    var headers = values[0];
+
+    for (var i = 1; i < values.length; i++) {
+      if (String(values[i][0]) === String(id)) {
+        var rowData = headers.map(function(h) {
+          return data[h] !== undefined ? data[h] : values[i][headers.indexOf(h)];
+        });
         sheet.getRange(i + 1, 1, 1, rowData.length).setValues([rowData]);
         return true;
       }
     }
     return false;
-  }
+  };
 
   /**
    * Get employee by ID
-   * @param {string} employeeId
-   * @returns {Object|null}
    */
-  getEmployeeById(employeeId) {
-    return this.findById(SHEETS.EMPLOYEES, employeeId);
-  }
+  SheetsServiceClass.prototype.getEmployeeById = function(employeeId) {
+    return this.findById(_SHEETS.EMPLOYEES, employeeId);
+  };
 
   /**
    * Get job site by ID
-   * @param {string} siteId
-   * @returns {Object|null}
    */
-  getJobSiteById(siteId) {
-    return this.findById(SHEETS.JOB_SITES, siteId);
-  }
+  SheetsServiceClass.prototype.getJobSiteById = function(siteId) {
+    return this.findById(_SHEETS.JOB_SITES, siteId);
+  };
 
   /**
    * Get all employees
-   * @returns {Object[]}
    */
-  getAllEmployees() {
-    return this.getAllRows(SHEETS.EMPLOYEES);
-  }
+  SheetsServiceClass.prototype.getAllEmployees = function() {
+    return this.getAllRows(_SHEETS.EMPLOYEES);
+  };
 
   /**
    * Get all job sites
-   * @returns {Object[]}
    */
-  getAllJobSites() {
-    return this.getAllRows(SHEETS.JOB_SITES);
-  }
+  SheetsServiceClass.prototype.getAllJobSites = function() {
+    return this.getAllRows(_SHEETS.JOB_SITES);
+  };
 
   /**
    * Get all shifts
-   * @returns {Object[]}
    */
-  getAllShifts() {
-    return this.getAllRows(SHEETS.SHIFTS);
-  }
+  SheetsServiceClass.prototype.getAllShifts = function() {
+    return this.getAllRows(_SHEETS.SHIFTS);
+  };
 
   /**
    * Get all overtime records
-   * @returns {Object[]}
    */
-  getAllOvertime() {
-    return this.getAllRows(SHEETS.OVERTIME);
-  }
+  SheetsServiceClass.prototype.getAllOvertime = function() {
+    return this.getAllRows(_SHEETS.OVERTIME);
+  };
 
   /**
    * Get setting value
-   * @param {string} key
-   * @returns {string|null}
    */
-  getSetting(key) {
-    const settings = this.getAllRows(SHEETS.SETTINGS);
-    const setting = settings.find(s => s.Key === key);
+  SheetsServiceClass.prototype.getSetting = function(key) {
+    var settings = this.getAllRows(_SHEETS.SETTINGS);
+    var setting = settings.find(function(s) { return s.Key === key; });
     return setting ? setting.Value : null;
-  }
+  };
 
   /**
    * Set setting value
-   * @param {string} key
-   * @param {string} value
    */
-  setSetting(key, value) {
-    const sheet = this.getOrCreateSheet(SHEETS.SETTINGS);
-    const dataRange = sheet.getDataRange();
-    const values = dataRange.getValues();
-    
-    for (let i = 1; i < values.length; i++) {
+  SheetsServiceClass.prototype.setSetting = function(key, value) {
+    if (this._mockData && this._mockData[_SHEETS.SETTINGS]) {
+      var item = this._mockData[_SHEETS.SETTINGS].find(function(s) { return s.Key === key; });
+      if (item) {
+        item.Value = value;
+        item['Updated At'] = new Date().toISOString();
+      } else {
+        this._mockData[_SHEETS.SETTINGS].push({ Key: key, Value: value, Description: '', 'Updated At': new Date().toISOString() });
+      }
+      return;
+    }
+
+    var sheet = this.getOrCreateSheet(_SHEETS.SETTINGS);
+    if (!sheet) return;
+    var dataRange = sheet.getDataRange();
+    var values = dataRange.getValues();
+
+    for (var i = 1; i < values.length; i++) {
       if (values[i][0] === key) {
         sheet.getRange(i + 1, 2).setValue(value);
         sheet.getRange(i + 1, 4).setValue(new Date().toISOString());
         return;
       }
     }
-    
-    // Not found, append new
-    const newRow = sheet.getLastRow() + 1;
+
+    var newRow = sheet.getLastRow() + 1;
     sheet.getRange(newRow, 1, 1, 4).setValues([[key, value, '', new Date().toISOString()]]);
-  }
+  };
 
   /**
-   * Generate unique ID
-   * @param {string} prefix
-   * @returns {string}
+   * Generate sequential/unique ID
    */
-  generateId(prefix) {
-    const timestamp = Date.now().toString(36);
-    const random = Math.random().toString(36).substr(2, 5);
-    return `${prefix}${timestamp}${random}`.toUpperCase();
-  }
+  SheetsServiceClass.prototype.generateId = function(prefix) {
+    var timestamp = Date.now().toString(36);
+    var random = Math.random().toString(36).substring(2, 6);
+    return (prefix + timestamp + random).toUpperCase();
+  };
 
-  /**
-   * Generate Employee ID
-   * @returns {string}
-   */
-  generateEmployeeId() {
+  SheetsServiceClass.prototype.generateEmployeeId = function() {
     return this.generateId('EMP');
-  }
+  };
 
-  /**
-   * Generate Site ID
-   * @returns {string}
-   */
-  generateSiteId() {
+  SheetsServiceClass.prototype.generateSiteId = function() {
     return this.generateId('SITE');
-  }
+  };
 
-  /**
-   * Generate Shift ID
-   * @returns {string}
-   */
-  generateShiftId() {
+  SheetsServiceClass.prototype.generateShiftId = function() {
     return this.generateId('SHIFT');
-  }
+  };
 
-  /**
-   * Generate Overtime ID
-   * @returns {string}
-   */
-  generateOvertimeId() {
+  SheetsServiceClass.prototype.generateOvertimeId = function() {
     return this.generateId('OT');
-  }
+  };
 
-  /**
-   * Generate Audit Log ID
-   * @returns {string}
-   */
-  generateAuditId() {
+  SheetsServiceClass.prototype.generateAuditId = function() {
     return this.generateId('AL');
-  }
-}
+  };
 
-module.exports = new SheetsService();
+  return new SheetsServiceClass();
+})();
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = SheetsService;
+}

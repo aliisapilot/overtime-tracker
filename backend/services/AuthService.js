@@ -1,98 +1,219 @@
-const CONFIG = require('../lib/Config');
-const SheetsService = require('./SheetsService');
-
 /**
- * Authentication Service for Google Apps Script
- * Handles employee authentication with PIN verification against Google Sheets
+ * Authentication Service
+ * Handles employee authentication, PBKDF2 PIN verification, session issuance, and authorization
+ * Dual compatible with Google Apps Script and Node.js
  */
-class AuthService {
-  constructor() {
-    this.sheets = SheetsService;
-    this.maxAttempts = CONFIG.MAX_LOGIN_ATTEMPTS;
-    this.lockTimeout = CONFIG.LOCK_TIMEOUT;
+
+var _ConfigModule = (typeof CONFIG !== 'undefined' && typeof SHEETS !== 'undefined') 
+  ? { CONFIG: CONFIG, SHEETS: SHEETS } 
+  : (typeof require !== 'undefined' ? require('../lib/Config') : { CONFIG: {}, SHEETS: {} });
+var _CONFIG = _ConfigModule.CONFIG;
+var _SHEETS = _ConfigModule.SHEETS;
+
+var _CryptoUtils = (typeof CryptoUtils !== 'undefined')
+  ? CryptoUtils
+  : (typeof require !== 'undefined' ? require('../lib/CryptoUtils') : null);
+
+var _SheetsService = (typeof SheetsService !== 'undefined')
+  ? SheetsService
+  : (typeof require !== 'undefined' ? require('./SheetsService') : null);
+
+var AuthService = (function() {
+  function AuthServiceClass() {
+    this.maxAttempts = _CONFIG.MAX_LOGIN_ATTEMPTS || 5;
+    this.lockoutTimeMs = _CONFIG.LOCKOUT_TIME_MS || (15 * 60 * 1000);
   }
 
   /**
-   * Authenticate a user with employee ID and PIN
-   * @param {Object} params - Request parameters
-   * @returns {Object} Auth result with user data or error
+   * Helper: log authentication events to Audit Logs sheet
    */
-  login(params) {
+  AuthServiceClass.prototype.logAuthEvent = function(employeeId, action, outcome, details, performedBy) {
     try {
-      const { employeeId, pin } = params;
-      
+      if (!_SheetsService) return;
+      var auditId = _SheetsService.generateAuditId();
+      var auditData = {
+        ID: auditId,
+        'Employee ID': employeeId || 'ANONYMOUS',
+        Action: action,
+        Outcome: outcome,
+        Timestamp: new Date().toISOString(),
+        'Performed By': performedBy || employeeId || 'system',
+        Details: details
+      };
+      _SheetsService.appendRow(_SHEETS.AUDIT_LOGS, auditData);
+    } catch (e) {
+      if (typeof Logger !== 'undefined') Logger.log('Audit log error: ' + e);
+    }
+  };
+
+  /**
+   * Check if an account is temporarily locked due to consecutive failed attempts
+   */
+  AuthServiceClass.prototype.isLocked = function(employeeId) {
+    if (typeof CacheService !== 'undefined' && CacheService.getScriptCache) {
+      var cache = CacheService.getScriptCache();
+      var attempts = parseInt(cache.get('fail_' + employeeId) || '0', 10);
+      return attempts >= this.maxAttempts;
+    }
+    return false;
+  };
+
+  /**
+   * Record a failed login attempt
+   */
+  AuthServiceClass.prototype.recordFailedAttempt = function(employeeId) {
+    if (typeof CacheService !== 'undefined' && CacheService.getScriptCache) {
+      var cache = CacheService.getScriptCache();
+      var key = 'fail_' + employeeId;
+      var current = parseInt(cache.get(key) || '0', 10) + 1;
+      cache.put(key, String(current), Math.ceil(this.lockoutTimeMs / 1000));
+      return current;
+    }
+    return 1;
+  };
+
+  /**
+   * Clear failed attempts upon successful login
+   */
+  AuthServiceClass.prototype.clearFailedAttempts = function(employeeId) {
+    if (typeof CacheService !== 'undefined' && CacheService.getScriptCache) {
+      CacheService.getScriptCache().remove('fail_' + employeeId);
+    }
+  };
+
+  /**
+   * Authenticate employee by Employee ID and PIN
+   * @param {Object} params - { employeeId, pin }
+   * @returns {Object} Result with token, user data or error
+   */
+  AuthServiceClass.prototype.login = function(params) {
+    try {
+      var employeeId = (params.employeeId || '').trim().toUpperCase();
+      var pin = (params.pin || '').trim();
+
       if (!employeeId || !pin) {
-        return this.errorResponse('Employee ID and PIN are required');
+        return { success: false, message: 'Employee ID and PIN are required' };
       }
 
-      const employee = this.sheets.getEmployeeById(employeeId);
-      
+      if (this.isLocked(employeeId)) {
+        this.logAuthEvent(employeeId, 'login', 'failed', 'Account locked due to too many attempts');
+        return { success: false, message: 'Account is temporarily locked due to too many failed attempts. Please wait 15 minutes.' };
+      }
+
+      var employee = _SheetsService.getEmployeeById(employeeId);
       if (!employee) {
-        this.logAuthEvent(employeeId, 'login', 'failed', 'Employee not found');
-        return this.errorResponse('Invalid Employee ID or PIN');
+        this.recordFailedAttempt(employeeId);
+        this.logAuthEvent(employeeId, 'login', 'failed', 'Employee ID not found');
+        return { success: false, message: 'Invalid Employee ID or PIN' };
       }
 
       if (employee.Status !== 'Active') {
-        this.logAuthEvent(employeeId, 'login', 'failed', 'Employee inactive');
-        return this.errorResponse('Account is deactivated');
+        this.logAuthEvent(employeeId, 'login', 'failed', 'Employee status is ' + employee.Status);
+        return { success: false, message: 'Account is inactive. Please contact administrator.' };
       }
 
-      // Verify PIN - in production, compare against hash
-      // For now, we store PIN hash in the sheet
-      const pinHash = employee['PIN Hash'] || employee.PINHash;
-      if (!this.verifyPin(pin, pinHash)) {
-        this.logAuthEvent(employeeId, 'login', 'failed', 'Invalid PIN');
-        return this.errorResponse('Invalid Employee ID or PIN');
+      var storedHash = employee['PIN Hash'] || employee.PINHash || '';
+      var verifyResult = _CryptoUtils.verifyPin(pin, storedHash);
+
+      if (!verifyResult.valid) {
+        var attempts = this.recordFailedAttempt(employeeId);
+        var remaining = Math.max(0, this.maxAttempts - attempts);
+        this.logAuthEvent(employeeId, 'login', 'failed', 'Invalid PIN attempt (' + attempts + '/' + this.maxAttempts + ')');
+        return { 
+          success: false, 
+          message: 'Invalid Employee ID or PIN' + (remaining > 0 ? ' (' + remaining + ' attempts remaining)' : '')
+        };
       }
 
-      // Check if account is locked
-      if (this.isLocked(employee)) {
-        this.logAuthEvent(employeeId, 'login', 'failed', 'Account locked');
-        return this.errorResponse('Account temporarily locked. Try again later.');
+      // Successful PIN verification: clear failure counter
+      this.clearFailedAttempts(employeeId);
+
+      // Upgrade hash to PBKDF2 if it was verified via legacy algorithm
+      if (verifyResult.shouldUpgrade) {
+        try {
+          var newPbkdf2Hash = _CryptoUtils.hashPin(pin);
+          _SheetsService.updateRow(_SHEETS.EMPLOYEES, employeeId, {
+            'PIN Hash': newPbkdf2Hash
+          });
+        } catch (upgradeErr) {
+          // Non-fatal
+        }
       }
 
-      // Update last accessed
-      this.sheets.updateRow(CONFIG.SHEETS.EMPLOYEES, employeeId, {
+      // Record last accessed timestamp
+      _SheetsService.updateRow(_SHEETS.EMPLOYEES, employeeId, {
         'Last Accessed': new Date().toISOString()
       });
 
-      this.logAuthEvent(employeeId, 'login', 'success', 'Successful login');
+      // Issue signed session token
+      var siteId = employee['Site ID'] || employee.SiteID || '';
+      var role = employee.Role || _CONFIG.LABOURER_ROLE || 'Labourer';
+      var token = _CryptoUtils.createSessionToken({
+        employeeId: employee.ID,
+        name: employee.Name,
+        role: role,
+        siteId: siteId
+      });
+
+      this.logAuthEvent(employeeId, 'login', 'success', 'Successful login (' + role + ')');
+
+      var site = siteId ? _SheetsService.getJobSiteById(siteId) : null;
 
       return {
         success: true,
-        employeeId: employee.ID,
-        name: employee.Name,
-        role: employee.Role,
-        siteId: employee['Site ID'] || employee.SiteID,
-        isActive: true
+        token: token,
+        employee: {
+          id: employee.ID,
+          name: employee.Name,
+          role: role,
+          phone: employee.Phone || '',
+          siteId: siteId,
+          siteName: site ? site.Name : '',
+          siteLat: site ? parseFloat(site.Latitude) : null,
+          siteLon: site ? parseFloat(site.Longitude) : null,
+          geofenceRadius: site ? parseFloat(site['Geofence Radius'] || site.GeofenceRadius || _CONFIG.DEFAULT_GEOFENCE_RADIUS) : 100
+        }
       };
     } catch (error) {
-      logError('Auth error', error);
-      return this.errorResponse('Authentication failed');
+      if (typeof Logger !== 'undefined') Logger.log('Login error: ' + error);
+      return { success: false, message: 'Authentication service error: ' + (error.message || error) };
     }
-  }
+  };
 
   /**
-   * Get employee data for session
-   * @param {Object} params - Request parameters
-   * @returns {Object}
+   * Validate session token from incoming request
+   * @param {string} token
+   * @returns {{ valid: boolean, session: Object|null, error?: string }}
    */
-  getEmployeeData(params) {
+  AuthServiceClass.prototype.validateSession = function(token) {
+    if (!token) {
+      return { valid: false, session: null, error: 'Session token is missing' };
+    }
+    var session = _CryptoUtils.verifySessionToken(token);
+    if (!session) {
+      return { valid: false, session: null, error: 'Invalid or expired session token. Please log in again.' };
+    }
+    return { valid: true, session: session };
+  };
+
+  /**
+   * Get employee data for active session
+   */
+  AuthServiceClass.prototype.getEmployeeData = function(params) {
     try {
-      const { employeeId } = params;
-      
+      var employeeId = params.employeeId;
       if (!employeeId) {
-        return this.errorResponse('Employee ID required');
+        return { success: false, message: 'Employee ID required' };
       }
 
-      const employee = this.sheets.getEmployeeById(employeeId);
-      
+      var employee = _SheetsService.getEmployeeById(employeeId);
       if (!employee) {
-        return this.errorResponse('Employee not found');
+        return { success: false, message: 'Employee not found' };
       }
 
-      const site = this.sheets.getJobSiteById(employee['Site ID'] || employee.SiteID);
-      
+      var siteId = employee['Site ID'] || employee.SiteID;
+      var site = siteId ? _SheetsService.getJobSiteById(siteId) : null;
+
       return {
         success: true,
         employee: {
@@ -100,93 +221,67 @@ class AuthService {
           name: employee.Name,
           phone: employee.Phone,
           role: employee.Role,
-          siteId: employee['Site ID'] || employee.SiteID,
-          siteName: site ? site.Name : 'Unknown',
-          siteLat: site ? site.Latitude : null,
-          siteLon: site ? site.Longitude : null,
-          geofenceRadius: site ? site['Geofence Radius'] || site.GeofenceRadius : 100,
+          siteId: siteId,
+          siteName: site ? site.Name : 'Unassigned',
+          siteLat: site ? parseFloat(site.Latitude) : null,
+          siteLon: site ? parseFloat(site.Longitude) : null,
+          geofenceRadius: site ? parseFloat(site['Geofence Radius'] || site.GeofenceRadius || _CONFIG.DEFAULT_GEOFENCE_RADIUS) : 100,
           status: employee.Status
         }
       };
     } catch (error) {
-      logError('Get employee data error', error);
-      return this.errorResponse('Failed to get employee data');
+      return { success: false, message: 'Failed to fetch employee details' };
     }
-  }
+  };
 
   /**
-   * Verify PIN against stored hash
-   * @param {string} pin - Plain text PIN
-   * @param {string} storedHash - Stored hash
-   * @returns {boolean}
+   * Change employee PIN securely
    */
-  verifyPin(pin, storedHash) {
-    // In production, use proper hashing like bcrypt or PBKDF2
-    // For GAS, we can use a simple hash for demo
-    // TODO: Implement proper server-side PIN hashing
-    const hashedPin = this.hashPin(pin);
-    return hashedPin === storedHash;
-  }
+  AuthServiceClass.prototype.changePin = function(params, session) {
+    var employeeId = params.employeeId;
+    var currentPin = params.currentPin;
+    var newPin = params.newPin;
 
-  /**
-   * Hash PIN for storage
-   * @param {string} pin
-   * @returns {string}
-   */
-  hashPin(pin) {
-    // Simple hash for demo - replace with proper crypto in production
-    // Using Utilities.computeDigest for GAS compatibility
-    const hash = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, pin + 'salt_' + pin.length);
-    return Utilities.base64Encode(hash);
-  }
-
-  /**
-   * Check if account is locked due to failed attempts
-   * @param {Object} employee
-   * @returns {boolean}
-   */
-  isLocked(employee) {
-    // In a full implementation, track failed attempts in a separate sheet
-    // For now, return false
-    return false;
-  }
-
-  /**
-   * Log authentication event to audit log
-   * @param {string} employeeId
-   * @param {string} action
-   * @param {string} outcome
-   * @param {string} details
-   */
-  logAuthEvent(employeeId, action, outcome, details) {
-    try {
-      const auditId = this.sheets.generateAuditId();
-      const auditData = {
-        ID: auditId,
-        'Employee ID': employeeId,
-        Action: action,
-        Outcome: outcome,
-        Timestamp: new Date().toISOString(),
-        'Performed By': 'system',
-        Details: details
-      };
-      this.sheets.appendRow(CONFIG.SHEETS.AUDIT_LOGS, auditData);
-    } catch (error) {
-      logError('Failed to log auth event', error);
+    if (!employeeId || !currentPin || !newPin) {
+      return { success: false, message: 'Employee ID, current PIN, and new PIN are required' };
     }
-  }
 
-  /**
-   * Create error response
-   * @param {string} message
-   * @returns {Object}
-   */
-  errorResponse(message) {
-    return {
-      success: false,
-      message: message
-    };
-  }
+    if (newPin.length < 4) {
+      return { success: false, message: 'New PIN must be at least 4 digits' };
+    }
+
+    // Must be either self or Admin
+    if (session.role !== _CONFIG.ADMIN_ROLE && session.employeeId !== employeeId) {
+      return { success: false, message: 'Unauthorized to change PIN for another employee' };
+    }
+
+    var employee = _SheetsService.getEmployeeById(employeeId);
+    if (!employee) {
+      return { success: false, message: 'Employee not found' };
+    }
+
+    // Verify current PIN (admins can reset without current PIN if adminOverride is true)
+    if (!params.adminOverride) {
+      var storedHash = employee['PIN Hash'] || employee.PINHash;
+      var verifyResult = _CryptoUtils.verifyPin(currentPin, storedHash);
+      if (!verifyResult.valid) {
+        return { success: false, message: 'Current PIN is incorrect' };
+      }
+    }
+
+    var newHash = _CryptoUtils.hashPin(newPin);
+    _SheetsService.updateRow(_SHEETS.EMPLOYEES, employeeId, {
+      'PIN Hash': newHash
+    });
+
+    this.logAuthEvent(employeeId, 'change_pin', 'success', 'PIN updated securely', session.employeeId);
+
+    return { success: true, message: 'PIN updated successfully' };
+  };
+
+  return new AuthServiceClass();
+})();
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = AuthService;
 }
-
-module.exports = new AuthService();

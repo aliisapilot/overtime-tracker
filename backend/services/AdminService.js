@@ -1,191 +1,175 @@
-const CONFIG = require('../lib/Config');
-const SheetsService = require('./SheetsService');
-
 /**
  * Admin Service
- * Handles administrative operations: employees, job sites, reports
+ * Handles administrative operations: employee management, job site CRUD, attendance review & reports
+ * Dual compatible with Google Apps Script and Node.js
  */
-class AdminService {
-  constructor() {
-    this.sheets = SheetsService;
-  }
+
+var _ConfigModule = (typeof CONFIG !== 'undefined' && typeof SHEETS !== 'undefined') 
+  ? { CONFIG: CONFIG, SHEETS: SHEETS } 
+  : (typeof require !== 'undefined' ? require('../lib/Config') : { CONFIG: {}, SHEETS: {} });
+var _CONFIG = _ConfigModule.CONFIG;
+var _SHEETS = _ConfigModule.SHEETS;
+
+var _CryptoUtils = (typeof CryptoUtils !== 'undefined')
+  ? CryptoUtils
+  : (typeof require !== 'undefined' ? require('../lib/CryptoUtils') : null);
+
+var _SheetsService = (typeof SheetsService !== 'undefined')
+  ? SheetsService
+  : (typeof require !== 'undefined' ? require('./SheetsService') : null);
+
+var AdminService = (function() {
+  function AdminServiceClass() {}
+
+  /**
+   * Log audit record
+   */
+  AdminServiceClass.prototype.logAudit = function(employeeId, action, outcome, details, performedBy) {
+    try {
+      if (!_SheetsService) return;
+      var auditId = _SheetsService.generateAuditId();
+      var auditData = {
+        ID: auditId,
+        'Employee ID': employeeId,
+        Action: action,
+        Outcome: outcome,
+        Timestamp: new Date().toISOString(),
+        'Performed By': performedBy || 'Ateeb (Admin)',
+        Details: details
+      };
+      _SheetsService.appendRow(_SHEETS.AUDIT_LOGS, auditData);
+    } catch (e) {
+      if (typeof Logger !== 'undefined') Logger.log('Audit error: ' + e);
+    }
+  };
 
   /**
    * Get all job sites
-   * @param {Object} params - Request parameters
-   * @returns {Object}
    */
-  getJobSites(params) {
+  AdminServiceClass.prototype.getJobSites = function() {
     try {
-      const sites = this.sheets.getAllJobSites();
+      var sites = _SheetsService.getAllJobSites();
       return {
         success: true,
-        jobSites: sites.map(s => ({
-          id: s.ID,
-          name: s.Name,
-          address: s.Address,
-          lat: parseFloat(s.Latitude),
-          lon: parseFloat(s.Longitude),
-          geofenceRadius: parseFloat(s['Geofence Radius'] || s.GeofenceRadius || CONFIG.DEFAULT_GEOFENCE_RADIUS),
-          status: s.Status
-        }))
+        jobSites: sites.map(function(s) {
+          return {
+            id: s.ID,
+            name: s.Name,
+            address: s.Address || '',
+            lat: parseFloat(s.Latitude),
+            lon: parseFloat(s.Longitude),
+            geofenceRadius: parseFloat(s['Geofence Radius'] || s.GeofenceRadius || _CONFIG.DEFAULT_GEOFENCE_RADIUS || 100),
+            status: s.Status,
+            createdAt: s['Created At'] || ''
+          };
+        })
       };
     } catch (error) {
-      logError('Get job sites error', error);
-      return this.errorResponse('Failed to get job sites');
+      return { success: false, message: 'Failed to retrieve job sites: ' + (error.message || error) };
     }
-  }
-
-  /**
-   * Get all employees
-   * @param {Object} params - Request parameters
-   * @returns {Object}
-   */
-  getEmployees(params) {
-    try {
-      const employees = this.sheets.getAllEmployees();
-      return {
-        success: true,
-        employees: employees.map(e => ({
-          id: e.ID,
-          name: e.Name,
-          phone: e.Phone,
-          role: e.Role,
-          siteId: e['Site ID'] || e.SiteID,
-          status: e.Status,
-          createdAt: e['Created At']
-        }))
-      };
-    } catch (error) {
-      logError('Get employees error', error);
-      return this.errorResponse('Failed to get employees');
-    }
-  }
-
-  /**
-   * Get attendance data
-   * @param {Object} params - Request parameters
-   * @returns {Object}
-   */
-  getAttendance(params) {
-    try {
-      const { date, employeeId, siteId } = params;
-      const shifts = this.sheets.getAllShifts();
-      
-      let filtered = shifts;
-      
-      if (date) {
-        const targetDate = new Date(date).toISOString().split('T')[0];
-        filtered = filtered.filter(s => {
-          const shiftDate = new Date(s['Start Time']).toISOString().split('T')[0];
-          return shiftDate === targetDate;
-        });
-      }
-      
-      if (employeeId) {
-        filtered = filtered.filter(s => s['Employee ID'] === employeeId);
-      }
-      
-      if (siteId) {
-        filtered = filtered.filter(s => s['Site ID'] === siteId);
-      }
-
-      const attendance = filtered.map(s => {
-        const employee = this.sheets.getEmployeeById(s['Employee ID']);
-        const site = this.sheets.getJobSiteById(s['Site ID']);
-        return {
-          shiftId: s.ID,
-          employeeId: s['Employee ID'],
-          employeeName: employee ? employee.Name : 'Unknown',
-          siteId: s['Site ID'],
-          siteName: site ? site.Name : 'Unknown',
-          startTime: s['Start Time'],
-          endTime: s['End Time'],
-          startLat: parseFloat(s['Start Latitude']),
-          startLon: parseFloat(s['Start Longitude']),
-          startAccuracy: parseFloat(s['Start Accuracy']),
-          endLat: parseFloat(s['End Latitude']),
-          endLon: parseFloat(s['End Longitude']),
-          endAccuracy: parseFloat(s['End Accuracy']),
-          breakMinutes: parseFloat(s['Break Minutes']),
-          regularHours: parseFloat(s['Regular Hours']),
-          overtimeHours: parseFloat(s['Overtime Hours']),
-          status: s.Status
-        };
-      });
-
-      return {
-        success: true,
-        attendance
-      };
-    } catch (error) {
-      logError('Get attendance error', error);
-      return this.errorResponse('Failed to get attendance');
-    }
-  }
+  };
 
   /**
    * Create a new job site
-   * @param {Object} params - Request parameters
-   * @returns {Object}
    */
-  createJobSite(params) {
+  AdminServiceClass.prototype.createJobSite = function(params, session) {
     try {
-      const { name, address, lat, lon, geofenceRadius } = params;
-      
-      if (!name || !address || lat === undefined || lon === undefined) {
-        return this.errorResponse('Name, address, latitude, and longitude are required');
+      var name = (params.name || '').trim();
+      var address = (params.address || '').trim();
+      var lat = parseFloat(params.lat);
+      var lon = parseFloat(params.lon);
+      var geofenceRadius = parseFloat(params.geofenceRadius || _CONFIG.DEFAULT_GEOFENCE_RADIUS || 100);
+
+      if (!name) {
+        return { success: false, message: 'Job site name is required' };
+      }
+      if (isNaN(lat) || isNaN(lon)) {
+        return { success: false, message: 'Valid latitude and longitude coordinates are required' };
       }
 
-      const siteId = this.sheets.generateSiteId();
-      const siteData = {
+      var siteId = _SheetsService.generateSiteId();
+      var siteData = {
         ID: siteId,
         Name: name,
         Address: address,
         Latitude: lat,
         Longitude: lon,
-        'Geofence Radius': geofenceRadius || CONFIG.DEFAULT_GEOFENCE_RADIUS,
+        'Geofence Radius': geofenceRadius,
         Status: 'Active',
         'Created At': new Date().toISOString()
       };
 
-      this.sheets.appendRow(CONFIG.SHEETS.JOB_SITES, siteData);
-      this.logAudit('system', 'Create Job Site', 'success', `Created site ${siteId}: ${name}`);
+      _SheetsService.appendRow(_SHEETS.JOB_SITES, siteData);
+      var adminName = session ? session.name : 'Admin';
+      this.logAudit('SYSTEM', 'create_job_site', 'success', 'Created site ' + siteId + ': ' + name + ' (' + lat + ', ' + lon + ')', adminName);
 
       return {
         success: true,
-        siteId,
+        siteId: siteId,
+        jobSite: siteData,
         message: 'Job site created successfully'
       };
     } catch (error) {
-      logError('Create job site error', error);
-      return this.errorResponse('Failed to create job site');
+      return { success: false, message: 'Failed to create job site: ' + (error.message || error) };
     }
-  }
+  };
 
   /**
-   * Create a new employee
-   * @param {Object} params - Request parameters
-   * @returns {Object}
+   * Get all employees
    */
-  createEmployee(params) {
+  AdminServiceClass.prototype.getEmployees = function() {
     try {
-      const { name, phone, role, siteId, pin } = params;
-      
-      if (!name || !phone || !role || !siteId || !pin) {
-        return this.errorResponse('Name, phone, role, site ID, and PIN are required');
+      var employees = _SheetsService.getAllEmployees();
+      return {
+        success: true,
+        employees: employees.map(function(e) {
+          return {
+            id: e.ID,
+            name: e.Name,
+            phone: e.Phone || '',
+            role: e.Role || 'Labourer',
+            siteId: e['Site ID'] || e.SiteID || '',
+            status: e.Status || 'Active',
+            createdAt: e['Created At'] || '',
+            lastAccessed: e['Last Accessed'] || ''
+          };
+        })
+      };
+    } catch (error) {
+      return { success: false, message: 'Failed to retrieve employees: ' + (error.message || error) };
+    }
+  };
+
+  /**
+   * Create a new employee with securely hashed PBKDF2 PIN
+   */
+  AdminServiceClass.prototype.createEmployee = function(params, session) {
+    try {
+      var name = (params.name || '').trim();
+      var phone = (params.phone || '').trim();
+      var role = (params.role || _CONFIG.LABOURER_ROLE || 'Labourer').trim();
+      var siteId = (params.siteId || '').trim();
+      var pin = (params.pin || '').trim();
+
+      if (!name || !phone || !pin) {
+        return { success: false, message: 'Name, phone, and PIN are required' };
       }
 
-      const site = this.sheets.getJobSiteById(siteId);
-      if (!site) {
-        return this.errorResponse('Invalid site ID');
+      if (pin.length < 4) {
+        return { success: false, message: 'PIN must be at least 4 digits' };
       }
 
-      const employeeId = this.sheets.generateEmployeeId();
-      const authService = require('./AuthService');
-      const pinHash = authService.hashPin(pin);
+      if (siteId) {
+        var site = _SheetsService.getJobSiteById(siteId);
+        if (!site) {
+          return { success: false, message: 'Selected job site (' + siteId + ') does not exist' };
+        }
+      }
 
-      const employeeData = {
+      var employeeId = _SheetsService.generateEmployeeId();
+      var pinHash = _CryptoUtils.hashPin(pin);
+
+      var employeeData = {
         ID: employeeId,
         Name: name,
         Phone: phone,
@@ -197,244 +181,334 @@ class AdminService {
         'Last Accessed': ''
       };
 
-      this.sheets.appendRow(CONFIG.SHEETS.EMPLOYEES, employeeData);
-      this.logAudit('system', 'Create Employee', 'success', `Created employee ${employeeId}: ${name}`);
+      _SheetsService.appendRow(_SHEETS.EMPLOYEES, employeeData);
+      var adminName = session ? session.name : 'Admin';
+      this.logAudit(employeeId, 'create_employee', 'success', 'Created employee ' + employeeId + ' (' + name + ', role: ' + role + ')', adminName);
 
       return {
         success: true,
-        employeeId,
-        pinHash,
+        employeeId: employeeId,
+        employee: {
+          id: employeeId,
+          name: name,
+          phone: phone,
+          role: role,
+          siteId: siteId,
+          status: 'Active'
+        },
         message: 'Employee created successfully'
       };
     } catch (error) {
-      logError('Create employee error', error);
-      return this.errorResponse('Failed to create employee');
+      return { success: false, message: 'Failed to create employee: ' + (error.message || error) };
     }
-  }
+  };
 
   /**
-   * Deactivate an employee
-   * @param {Object} params - Request parameters
-   * @returns {Object}
+   * Deactivate or activate an employee
    */
-  deactivateEmployee(params) {
+  AdminServiceClass.prototype.deactivateEmployee = function(params, session) {
     try {
-      const { employeeId } = params;
-      
+      var employeeId = (params.employeeId || '').trim();
+      var status = params.status || 'Inactive';
+
       if (!employeeId) {
-        return this.errorResponse('Employee ID required');
+        return { success: false, message: 'Employee ID is required' };
       }
 
-      const updated = this.sheets.updateRow(CONFIG.SHEETS.EMPLOYEES, employeeId, {
-        Status: 'Inactive'
+      var updated = _SheetsService.updateRow(_SHEETS.EMPLOYEES, employeeId, {
+        Status: status
       });
 
       if (!updated) {
-        return this.errorResponse('Employee not found');
+        return { success: false, message: 'Employee not found' };
       }
 
-      this.logAudit('system', 'Deactivate Employee', 'success', `Deactivated employee ${employeeId}`);
+      var adminName = session ? session.name : 'Admin';
+      this.logAudit(employeeId, 'update_employee_status', 'success', 'Set status of employee ' + employeeId + ' to ' + status, adminName);
 
       return {
         success: true,
-        message: 'Employee deactivated'
+        message: 'Employee status updated to ' + status
       };
     } catch (error) {
-      logError('Deactivate employee error', error);
-      return this.errorResponse('Failed to deactivate employee');
+      return { success: false, message: 'Failed to update employee status: ' + (error.message || error) };
     }
-  }
+  };
+
+  /**
+   * Get attendance records with site and employee metadata
+   */
+  AdminServiceClass.prototype.getAttendance = function(params) {
+    try {
+      var date = params.date;
+      var employeeId = params.employeeId;
+      var siteId = params.siteId;
+
+      var shifts = _SheetsService.getAllShifts();
+      var employees = _SheetsService.getAllEmployees();
+      var sites = _SheetsService.getAllJobSites();
+
+      var empMap = {};
+      employees.forEach(function(e) { empMap[e.ID] = e.Name; });
+
+      var siteMap = {};
+      sites.forEach(function(s) { siteMap[s.ID] = s.Name; });
+
+      var filtered = shifts;
+
+      if (date) {
+        var targetDate = new Date(date).toISOString().split('T')[0];
+        filtered = filtered.filter(function(s) {
+          if (!s['Start Time']) return false;
+          var sDate = new Date(s['Start Time']).toISOString().split('T')[0];
+          return sDate === targetDate;
+        });
+      }
+
+      if (employeeId) {
+        filtered = filtered.filter(function(s) { return s['Employee ID'] === employeeId; });
+      }
+
+      if (siteId) {
+        filtered = filtered.filter(function(s) { return s['Site ID'] === siteId; });
+      }
+
+      // Sort newest first
+      filtered.sort(function(a, b) {
+        return new Date(b['Start Time'] || 0) - new Date(a['Start Time'] || 0);
+      });
+
+      var attendance = filtered.map(function(s) {
+        return {
+          shiftId: s.ID,
+          employeeId: s['Employee ID'],
+          employeeName: empMap[s['Employee ID']] || 'Unknown',
+          siteId: s['Site ID'],
+          siteName: siteMap[s['Site ID']] || 'Unknown',
+          startTime: s['Start Time'],
+          endTime: s['End Time'] || null,
+          startLat: s['Start Latitude'] ? parseFloat(s['Start Latitude']) : null,
+          startLon: s['Start Longitude'] ? parseFloat(s['Start Longitude']) : null,
+          startAccuracy: s['Start Accuracy'] ? parseFloat(s['Start Accuracy']) : null,
+          endLat: s['End Latitude'] ? parseFloat(s['End Latitude']) : null,
+          endLon: s['End Longitude'] ? parseFloat(s['End Longitude']) : null,
+          endAccuracy: s['End Accuracy'] ? parseFloat(s['End Accuracy']) : null,
+          breakMinutes: parseFloat(s['Break Minutes'] || 0),
+          regularHours: parseFloat(s['Regular Hours'] || 0),
+          overtimeHours: parseFloat(s['Overtime Hours'] || 0),
+          status: s.Status
+        };
+      });
+
+      return {
+        success: true,
+        total: attendance.length,
+        attendance: attendance
+      };
+    } catch (error) {
+      return { success: false, message: 'Failed to retrieve attendance: ' + (error.message || error) };
+    }
+  };
+
+  /**
+   * Correct attendance record with audit logging
+   */
+  AdminServiceClass.prototype.correctAttendance = function(params, session) {
+    try {
+      var shiftId = params.shiftId;
+      var regularHours = params.regularHours !== undefined ? parseFloat(params.regularHours) : undefined;
+      var overtimeHours = params.overtimeHours !== undefined ? parseFloat(params.overtimeHours) : undefined;
+      var reason = params.reason || 'Admin manual correction';
+
+      if (!shiftId) {
+        return { success: false, message: 'Shift ID is required' };
+      }
+
+      var existingShift = _SheetsService.findById(_SHEETS.SHIFTS, shiftId);
+      if (!existingShift) {
+        return { success: false, message: 'Shift not found' };
+      }
+
+      var updateData = {};
+      if (regularHours !== undefined) updateData['Regular Hours'] = regularHours;
+      if (overtimeHours !== undefined) updateData['Overtime Hours'] = overtimeHours;
+
+      _SheetsService.updateRow(_SHEETS.SHIFTS, shiftId, updateData);
+
+      var adminName = session ? session.name : 'Admin';
+      var details = 'Corrected shift ' + shiftId + '. Previous: Reg ' + existingShift['Regular Hours'] + 'h, OT ' + existingShift['Overtime Hours'] + 
+                    'h -> New: Reg ' + (regularHours !== undefined ? regularHours : existingShift['Regular Hours']) + 'h, OT ' + 
+                    (overtimeHours !== undefined ? overtimeHours : existingShift['Overtime Hours']) + 'h. Reason: ' + reason;
+
+      this.logAudit(existingShift['Employee ID'], 'correct_attendance', 'success', details, adminName);
+
+      return {
+        success: true,
+        message: 'Shift record corrected successfully'
+      };
+    } catch (error) {
+      return { success: false, message: 'Failed to correct attendance: ' + (error.message || error) };
+    }
+  };
 
   /**
    * Get audit logs
-   * @param {Object} params - Request parameters
-   * @returns {Object}
    */
-  getAuditLogs(params) {
+  AdminServiceClass.prototype.getAuditLogs = function(params) {
     try {
-      const { employeeId, limit = 100 } = params;
-      let logs = this.sheets.getAllRows(CONFIG.SHEETS.AUDIT_LOGS);
-      
+      var limit = parseInt(params.limit || 100, 10);
+      var employeeId = params.employeeId;
+
+      var logs = _SheetsService.getAllRows(_SHEETS.AUDIT_LOGS);
       if (employeeId) {
-        logs = logs.filter(l => l['Employee ID'] === employeeId);
+        logs = logs.filter(function(l) { return l['Employee ID'] === employeeId; });
       }
-      
-      logs.sort((a, b) => new Date(b.Timestamp) - new Date(a.Timestamp));
-      logs = logs.slice(0, limit);
+
+      logs.sort(function(a, b) {
+        return new Date(b.Timestamp || 0) - new Date(a.Timestamp || 0);
+      });
 
       return {
         success: true,
-        auditLogs: logs
+        auditLogs: logs.slice(0, limit)
       };
     } catch (error) {
-      logError('Get audit logs error', error);
-      return this.errorResponse('Failed to get audit logs');
+      return { success: false, message: 'Failed to retrieve audit logs: ' + (error.message || error) };
     }
-  }
+  };
 
   /**
-   * Generate daily report
-   * @param {Object} params - Request parameters
-   * @returns {Object}
+   * Generate daily attendance report
    */
-  generateDailyReport(params) {
+  AdminServiceClass.prototype.generateDailyReport = function(params) {
     try {
-      const { date } = params;
-      const targetDate = date ? new Date(date) : new Date();
-      const dateStr = targetDate.toISOString().split('T')[0];
+      var targetDateStr = params.date ? new Date(params.date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
 
-      const shifts = this.sheets.getAllShifts().filter(s => {
-        const shiftDate = new Date(s['Start Time']).toISOString().split('T')[0];
-        return shiftDate === dateStr;
+      var shifts = _SheetsService.getAllShifts().filter(function(s) {
+        if (!s['Start Time']) return false;
+        return new Date(s['Start Time']).toISOString().split('T')[0] === targetDateStr;
       });
 
-      const employees = this.sheets.getAllEmployees();
-      const sites = this.sheets.getAllJobSites();
+      var employees = _SheetsService.getAllEmployees();
+      var sites = _SheetsService.getAllJobSites();
 
-      const report = {
-        date: dateStr,
-        totalEmployees: employees.filter(e => e.Status === 'Active').length,
+      var report = {
+        date: targetDateStr,
+        totalActiveEmployees: employees.filter(function(e) { return e.Status === 'Active'; }).length,
         totalShifts: shifts.length,
-        completedShifts: shifts.filter(s => s.Status === 'Completed').length,
-        activeShifts: shifts.filter(s => s.Status === 'Active').length,
-        totalRegularHours: shifts.reduce((sum, s) => sum + parseFloat(s['Regular Hours'] || 0), 0),
-        totalOvertimeHours: shifts.reduce((sum, s) => sum + parseFloat(s['Overtime Hours'] || 0), 0),
+        completedShifts: shifts.filter(function(s) { return s.Status === 'Completed'; }).length,
+        activeShifts: shifts.filter(function(s) { return s.Status === 'Active'; }).length,
+        totalRegularHours: Math.round(shifts.reduce(function(sum, s) { return sum + parseFloat(s['Regular Hours'] || 0); }, 0) * 100) / 100,
+        totalOvertimeHours: Math.round(shifts.reduce(function(sum, s) { return sum + parseFloat(s['Overtime Hours'] || 0); }, 0) * 100) / 100,
         bySite: {},
         byEmployee: {}
       };
 
-      shifts.forEach(shift => {
-        const siteId = shift['Site ID'];
-        const empId = shift['Employee ID'];
-        
+      shifts.forEach(function(s) {
+        var siteId = s['Site ID'] || 'UNKNOWN';
+        var empId = s['Employee ID'];
+
         if (!report.bySite[siteId]) {
-          const site = sites.find(s => s.ID === siteId);
+          var siteObj = sites.find(function(site) { return site.ID === siteId; });
           report.bySite[siteId] = {
-            siteName: site ? site.Name : 'Unknown',
+            siteName: siteObj ? siteObj.Name : siteId,
             shifts: 0,
             regularHours: 0,
             overtimeHours: 0
           };
         }
         report.bySite[siteId].shifts++;
-        report.bySite[siteId].regularHours += parseFloat(shift['Regular Hours'] || 0);
-        report.bySite[siteId].overtimeHours += parseFloat(shift['Overtime Hours'] || 0);
+        report.bySite[siteId].regularHours += parseFloat(s['Regular Hours'] || 0);
+        report.bySite[siteId].overtimeHours += parseFloat(s['Overtime Hours'] || 0);
 
         if (!report.byEmployee[empId]) {
-          const emp = employees.find(e => e.ID === empId);
+          var empObj = employees.find(function(emp) { return emp.ID === empId; });
           report.byEmployee[empId] = {
-            employeeName: emp ? emp.Name : 'Unknown',
+            employeeName: empObj ? empObj.Name : empId,
             shifts: 0,
             regularHours: 0,
             overtimeHours: 0
           };
         }
         report.byEmployee[empId].shifts++;
-        report.byEmployee[empId].regularHours += parseFloat(shift['Regular Hours'] || 0);
-        report.byEmployee[empId].overtimeHours += parseFloat(shift['Overtime Hours'] || 0);
+        report.byEmployee[empId].regularHours += parseFloat(s['Regular Hours'] || 0);
+        report.byEmployee[empId].overtimeHours += parseFloat(s['Overtime Hours'] || 0);
       });
 
       return {
         success: true,
-        report
+        report: report
       };
     } catch (error) {
-      logError('Generate daily report error', error);
-      return this.errorResponse('Failed to generate daily report');
+      return { success: false, message: 'Failed to generate daily report: ' + (error.message || error) };
     }
-  }
+  };
 
   /**
    * Generate monthly report
-   * @param {Object} params - Request parameters
-   * @returns {Object}
    */
-  generateMonthlyReport(params) {
+  AdminServiceClass.prototype.generateMonthlyReport = function(params) {
     try {
-      const { year, month } = params;
-      const targetYear = year || new Date().getFullYear();
-      const targetMonth = month !== undefined ? month : new Date().getMonth() + 1;
+      var targetYear = params.year ? parseInt(params.year, 10) : new Date().getFullYear();
+      var targetMonth = params.month !== undefined ? parseInt(params.month, 10) : new Date().getMonth() + 1;
 
-      const shifts = this.sheets.getAllShifts().filter(s => {
-        const shiftDate = new Date(s['Start Time']);
-        return shiftDate.getFullYear() === targetYear && shiftDate.getMonth() + 1 === targetMonth;
+      var shifts = _SheetsService.getAllShifts().filter(function(s) {
+        if (!s['Start Time']) return false;
+        var d = new Date(s['Start Time']);
+        return d.getFullYear() === targetYear && (d.getMonth() + 1) === targetMonth;
       });
 
-      const employees = this.sheets.getAllEmployees();
-      const sites = this.sheets.getAllJobSites();
+      var employees = _SheetsService.getAllEmployees();
 
-      const report = {
+      var report = {
         year: targetYear,
         month: targetMonth,
-        totalEmployees: employees.filter(e => e.Status === 'Active').length,
         totalShifts: shifts.length,
-        completedShifts: shifts.filter(s => s.Status === 'Completed').length,
-        totalRegularHours: shifts.reduce((sum, s) => sum + parseFloat(s['Regular Hours'] || 0), 0),
-        totalOvertimeHours: shifts.reduce((sum, s) => sum + parseFloat(s['Overtime Hours'] || 0), 0),
+        totalRegularHours: Math.round(shifts.reduce(function(sum, s) { return sum + parseFloat(s['Regular Hours'] || 0); }, 0) * 100) / 100,
+        totalOvertimeHours: Math.round(shifts.reduce(function(sum, s) { return sum + parseFloat(s['Overtime Hours'] || 0); }, 0) * 100) / 100,
         byEmployee: {}
       };
 
-      shifts.forEach(shift => {
-        const empId = shift['Employee ID'];
+      shifts.forEach(function(s) {
+        var empId = s['Employee ID'];
         if (!report.byEmployee[empId]) {
-          const emp = employees.find(e => e.ID === empId);
+          var empObj = employees.find(function(emp) { return emp.ID === empId; });
           report.byEmployee[empId] = {
-            employeeName: emp ? emp.Name : 'Unknown',
-            shifts: 0,
+            employeeName: empObj ? empObj.Name : empId,
+            shiftsCount: 0,
             regularHours: 0,
             overtimeHours: 0,
-            daysWorked: new Set()
+            daysWorkedSet: {}
           };
         }
-        report.byEmployee[empId].shifts++;
-        report.byEmployee[empId].regularHours += parseFloat(shift['Regular Hours'] || 0);
-        report.byEmployee[empId].overtimeHours += parseFloat(shift['Overtime Hours'] || 0);
-        report.byEmployee[empId].daysWorked.add(new Date(shift['Start Time']).getDate());
+        report.byEmployee[empId].shiftsCount++;
+        report.byEmployee[empId].regularHours += parseFloat(s['Regular Hours'] || 0);
+        report.byEmployee[empId].overtimeHours += parseFloat(s['Overtime Hours'] || 0);
+        var dayNum = new Date(s['Start Time']).getDate();
+        report.byEmployee[empId].daysWorkedSet[dayNum] = true;
       });
 
-      // Convert daysWorked Set to count
-      Object.keys(report.byEmployee).forEach(empId => {
-        report.byEmployee[empId].daysWorked = report.byEmployee[empId].daysWorked.size;
+      // Flatten daysWorkedSet to count
+      Object.keys(report.byEmployee).forEach(function(id) {
+        var item = report.byEmployee[id];
+        item.daysWorked = Object.keys(item.daysWorkedSet).length;
+        delete item.daysWorkedSet;
+        item.regularHours = Math.round(item.regularHours * 100) / 100;
+        item.overtimeHours = Math.round(item.overtimeHours * 100) / 100;
       });
 
       return {
         success: true,
-        report
+        report: report
       };
     } catch (error) {
-      logError('Generate monthly report error', error);
-      return this.errorResponse('Failed to generate monthly report');
+      return { success: false, message: 'Failed to generate monthly report: ' + (error.message || error) };
     }
-  }
+  };
 
-  /**
-   * Log audit event
-   * @param {string} employeeId
-   * @param {string} action
-   * @param {string} outcome
-   * @param {string} details
-   */
-  logAudit(employeeId, action, outcome, details) {
-    try {
-      const auditId = this.sheets.generateAuditId();
-      const auditData = {
-        ID: auditId,
-        'Employee ID': employeeId,
-        Action: action,
-        Outcome: outcome,
-        Timestamp: new Date().toISOString(),
-        'Performed By': 'system',
-        Details: details
-      };
-      this.sheets.appendRow(CONFIG.SHEETS.AUDIT_LOGS, auditData);
-    } catch (error) {
-      logError('Failed to log audit', error);
-    }
-  }
+  return new AdminServiceClass();
+})();
 
-  errorResponse(message) {
-    return { success: false, message };
-  }
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = AdminService;
 }
-
-module.exports = new AdminService();

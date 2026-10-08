@@ -69,39 +69,36 @@ If you already have a deployed Apps Script project:
 2. Add it to `.env.local`
 3. Both laptops will use the same backend and database
 
-### Option B: Create New Backend (For Separate Development)
-If you need an isolated development backend:
+### Fast Deployment using Bundled Dist.gs (Recommended)
 
-1. Go to [script.google.com](https://script.google.com)
-2. Click "New Project"
-3. Name it "Overtime Tracker Dev - [Your Name]"
-
-4. Create a new Google Spreadsheet:
-   - Go to [sheets.google.com](https://sheets.google.com)
-   - Create blank spreadsheet
-   - Name it "Overtime Tracker Data - Dev"
-   - Copy the Spreadsheet ID from URL: `https://docs.google.com/spreadsheets/d/SPREADSHEET_ID/edit`
-
-5. In Apps Script:
-   - Project Settings → Enable "Chrome V8 runtime"
-   - Resources → Advanced Google Services → Enable "Google Sheets API"
-   - File → Project Properties → Script Properties → Add:
-     - `SPREADSHEET_ID` = your spreadsheet ID
-
-6. Copy all files from `backend/` to Apps Script:
-   - `Code.gs` → Code.gs
-   - `lib/Config.js` → Create file `Config.js`
-   - `services/*.js` → Create each as separate script file
-
-7. Run `init()` function to initialize sheets
-
-8. Deploy → New Deployment:
-   - Type: Web App
-   - Execute as: Me
-   - Who has access: Anyone
-   - Copy the Web App URL
-
-9. Update `.env.local` with new URL
+1. Open your Google Spreadsheet or create a blank spreadsheet at [sheets.google.com](https://sheets.google.com)
+   - Name it: `Overtime Tracker Database`
+2. In the Spreadsheet menu, click **Extensions** → **Apps Script**
+   - This automatically creates a bound Apps Script project linked directly to your spreadsheet!
+3. In the Apps Script code editor:
+   - Clear whatever is inside `Code.gs`
+   - Open [`backend/Dist.gs`](file:///c:/Users/user/Overtime%20Tracker/backend/Dist.gs) from this project
+   - Copy the entire contents and paste into `Code.gs` in Apps Script
+   - Click the Save icon (💾)
+4. Initialize the Spreadsheet:
+   - In the toolbar dropdown, select the function **`init`**
+   - Click **Run**
+   - Google will prompt for permissions ("Authorization required"): Click **Review Permissions** → select your Google account → Click **Advanced** → Click **Go to Untitled project (unsafe)** → Click **Allow**
+   - Check the Execution log: `Spreadsheet initialized successfully`
+   - Switch back to your Google Sheet: You will see all 6 tabs created (`Employees`, `Job Sites`, `Shifts`, `Overtime`, `Settings`, `Audit Logs`) with Ateeb seeded as Admin!
+5. Deploy as Web App:
+   - Click the blue **Deploy** button (top right) → **New deployment**
+   - Select type: **Web app** (gear icon)
+   - Description: `v1.2.0 Overtime API`
+   - **Execute as**: **Me** (your Google email)
+   - **Who has access**: **Anyone** *(Critical: allows your Next.js app to send attendance records)*
+   - Click **Deploy**
+   - Copy the **Web App URL** (e.g., `https://script.google.com/macros/s/.../exec`)
+6. Configure Frontend:
+   - Paste the Web App URL into [`frontend/.env.local`](file:///c:/Users/user/Overtime%20Tracker/frontend/.env.local):
+     ```env
+     NEXT_PUBLIC_GAS_WEB_APP_URL=https://script.google.com/macros/s/YOUR_DEPLOYED_URL/exec
+     ```
 
 ## Verify Installation
 

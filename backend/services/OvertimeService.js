@@ -1,120 +1,130 @@
-const CONFIG = require('../lib/Config');
-const SheetsService = require('./SheetsService');
-
 /**
  * Overtime Service
- * Handles overtime approval and management
+ * Handles overtime approval and management workflow
+ * Dual compatible with Google Apps Script and Node.js
  */
-class OvertimeService {
-  constructor() {
-    this.sheets = SheetsService;
-  }
+
+var _ConfigModule = (typeof CONFIG !== 'undefined' && typeof SHEETS !== 'undefined') 
+  ? { CONFIG: CONFIG, SHEETS: SHEETS } 
+  : (typeof require !== 'undefined' ? require('../lib/Config') : { CONFIG: {}, SHEETS: {} });
+var _CONFIG = _ConfigModule.CONFIG;
+var _SHEETS = _ConfigModule.SHEETS;
+
+var _SheetsService = (typeof SheetsService !== 'undefined')
+  ? SheetsService
+  : (typeof require !== 'undefined' ? require('./SheetsService') : null);
+
+var OvertimeService = (function() {
+  function OvertimeServiceClass() {}
 
   /**
-   * Approve or reject overtime
-   * @param {Object} params - Request parameters
-   * @returns {Object} Approval result
+   * Log audit record
    */
-  approveOvertime(params) {
+  OvertimeServiceClass.prototype.logAudit = function(employeeId, action, outcome, details, performedBy) {
     try {
-      const { overtimeId, status, approvedBy } = params;
-      
-      if (!overtimeId || !status) {
-        return this.errorResponse('Overtime ID and status required');
-      }
-
-      if (!['Approved', 'Rejected'].includes(status)) {
-        return this.errorResponse('Status must be Approved or Rejected');
-      }
-
-      const overtime = this.sheets.findById(CONFIG.SHEETS.OVERTIME, overtimeId);
-      if (!overtime) {
-        return this.errorResponse('Overtime record not found');
-      }
-
-      if (overtime['Approval Status'] !== 'Pending') {
-        return this.errorResponse('Overtime already processed');
-      }
-
-      const updateData = {
-        'Approval Status': status,
-        'Approved By': approvedBy || 'Admin',
-        'Approved At': new Date().toISOString()
-      };
-
-      this.sheets.updateRow(CONFIG.SHEETS.OVERTIME, overtimeId, updateData);
-
-      // Log audit
-      this.logAudit(overtime['Employee ID'], 'Overtime ' + status, 'success', 
-        `Overtime ${overtimeId} ${status.toLowerCase()} by ${approvedBy}`);
-
-      return {
-        success: true,
-        overtimeId,
-        status,
-        message: `Overtime ${status.toLowerCase()}`
-      };
-    } catch (error) {
-      logError('Approve overtime error', error);
-      return this.errorResponse('Failed to process overtime');
-    }
-  }
-
-  /**
-   * Get pending overtime records
-   * @returns {Object[]}
-   */
-  getPendingOvertime() {
-    const overtime = this.sheets.getAllOvertime();
-    return overtime.filter(o => o['Approval Status'] === 'Pending');
-  }
-
-  /**
-   * Get all overtime records
-   * @returns {Object[]}
-   */
-  getAllOvertime() {
-    return this.sheets.getAllOvertime();
-  }
-
-  /**
-   * Get overtime for employee
-   * @param {string} employeeId
-   * @returns {Object[]}
-   */
-  getEmployeeOvertime(employeeId) {
-    const overtime = this.sheets.getAllOvertime();
-    return overtime.filter(o => o['Employee ID'] === employeeId);
-  }
-
-  /**
-   * Log audit event
-   * @param {string} employeeId
-   * @param {string} action
-   * @param {string} outcome
-   * @param {string} details
-   */
-  logAudit(employeeId, action, outcome, details) {
-    try {
-      const auditId = this.sheets.generateAuditId();
-      const auditData = {
+      if (!_SheetsService) return;
+      var auditId = _SheetsService.generateAuditId();
+      var auditData = {
         ID: auditId,
         'Employee ID': employeeId,
         Action: action,
         Outcome: outcome,
         Timestamp: new Date().toISOString(),
-        'Performed By': 'system',
+        'Performed By': performedBy || 'Admin',
         Details: details
       };
-      this.sheets.appendRow(CONFIG.SHEETS.AUDIT_LOGS, auditData);
-    } catch (error) {
-      logError('Failed to log audit', error);
+      _SheetsService.appendRow(_SHEETS.AUDIT_LOGS, auditData);
+    } catch (e) {
+      if (typeof Logger !== 'undefined') Logger.log('Audit error: ' + e);
     }
-  }
+  };
 
-  errorResponse(message) {
-    return { success: false, message };
-  }
+  /**
+   * Approve or reject overtime record (Admin operation)
+   * @param {Object} params - { overtimeId, status, approvedBy, note }
+   * @param {Object} session - Validated admin session
+   * @returns {Object}
+   */
+  OvertimeServiceClass.prototype.approveOvertime = function(params, session) {
+    try {
+      var overtimeId = params.overtimeId;
+      var status = params.status;
+      var approvedBy = (session && session.name) ? session.name : (params.approvedBy || 'Ateeb');
+
+      if (!overtimeId || !status) {
+        return { success: false, message: 'Overtime ID and approval status are required' };
+      }
+
+      if (status !== 'Approved' && status !== 'Rejected') {
+        return { success: false, message: 'Status must be either "Approved" or "Rejected"' };
+      }
+
+      var record = _SheetsService.findById(_SHEETS.OVERTIME, overtimeId);
+      if (!record) {
+        return { success: false, message: 'Overtime record not found' };
+      }
+
+      if (record['Approval Status'] !== 'Pending') {
+        return { 
+          success: false, 
+          message: 'Overtime record has already been processed as ' + record['Approval Status'] + ' on ' + record['Approved At'] 
+        };
+      }
+
+      var serverTimestamp = new Date().toISOString();
+      var updateData = {
+        'Approval Status': status,
+        'Approved By': approvedBy,
+        'Approved At': serverTimestamp
+      };
+
+      _SheetsService.updateRow(_SHEETS.OVERTIME, overtimeId, updateData);
+
+      var empId = record['Employee ID'];
+      var hours = record['Overtime Hours'];
+      this.logAudit(empId, 'Overtime ' + status, 'success', 
+        'Overtime record ' + overtimeId + ' (' + hours + 'h) ' + status.toLowerCase() + ' by ' + approvedBy, approvedBy);
+
+      return {
+        success: true,
+        overtimeId: overtimeId,
+        status: status,
+        approvedBy: approvedBy,
+        approvedAt: serverTimestamp,
+        message: 'Overtime record successfully ' + status.toLowerCase()
+      };
+    } catch (err) {
+      if (typeof Logger !== 'undefined') Logger.log('Approve overtime error: ' + err);
+      return { success: false, message: 'Failed to process overtime: ' + (err.message || err) };
+    }
+  };
+
+  /**
+   * Get all pending overtime records
+   */
+  OvertimeServiceClass.prototype.getPendingOvertime = function() {
+    var all = _SheetsService.getAllOvertime();
+    return all.filter(function(o) { return o['Approval Status'] === 'Pending'; });
+  };
+
+  /**
+   * Get all overtime records
+   */
+  OvertimeServiceClass.prototype.getAllOvertime = function() {
+    return _SheetsService.getAllOvertime();
+  };
+
+  /**
+   * Get overtime records for employee
+   */
+  OvertimeServiceClass.prototype.getEmployeeOvertime = function(employeeId) {
+    var all = _SheetsService.getAllOvertime();
+    return all.filter(function(o) { return o['Employee ID'] === employeeId; });
+  };
+
+  return new OvertimeServiceClass();
+})();
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = OvertimeService;
 }
-
-module.exports = new OvertimeService();

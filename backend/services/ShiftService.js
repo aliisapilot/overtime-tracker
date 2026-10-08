@@ -1,79 +1,155 @@
-const CONFIG = require('../lib/Config');
-const SheetsService = require('./SheetsService');
-const LocationService = require('./LocationService');
-
 /**
  * Shift Service
- * Handles shift start, end, and overtime calculations
+ * Handles starting/ending shifts with GPS validation, concurrency lock, and overtime calculation
+ * Dual compatible with Google Apps Script and Node.js
  */
-class ShiftService {
-  constructor() {
-    this.sheets = SheetsService;
-    this.location = LocationService;
-    this.regularHours = parseFloat(CONFIG.DEFAULT_REGULAR_HOURS);
-    this.breakDuration = parseFloat(CONFIG.DEFAULT_BREAK_DURATION);
+
+var _ConfigModule = (typeof CONFIG !== 'undefined' && typeof SHEETS !== 'undefined') 
+  ? { CONFIG: CONFIG, SHEETS: SHEETS } 
+  : (typeof require !== 'undefined' ? require('../lib/Config') : { CONFIG: {}, SHEETS: {} });
+var _CONFIG = _ConfigModule.CONFIG;
+var _SHEETS = _ConfigModule.SHEETS;
+
+var _SheetsService = (typeof SheetsService !== 'undefined')
+  ? SheetsService
+  : (typeof require !== 'undefined' ? require('./SheetsService') : null);
+
+var _LocationService = (typeof LocationService !== 'undefined')
+  ? LocationService
+  : (typeof require !== 'undefined' ? require('./LocationService') : null);
+
+var ShiftService = (function() {
+  function ShiftServiceClass() {
+    this.regularHours = parseFloat(_CONFIG.DEFAULT_REGULAR_HOURS || 8);
+    this.breakDuration = parseFloat(_CONFIG.DEFAULT_BREAK_DURATION || 60);
+    this.lockTimeout = _CONFIG.LOCK_TIMEOUT || 30000;
   }
 
   /**
-   * Start a new shift
-   * @param {Object} params - Request parameters
-   * @returns {Object} Shift start result
+   * Acquire script lock for safe concurrency writes
    */
-  startShift(params) {
+  ShiftServiceClass.prototype._acquireLock = function() {
+    if (typeof LockService !== 'undefined' && LockService.getScriptLock) {
+      var lock = LockService.getScriptLock();
+      try {
+        var acquired = lock.tryLock(this.lockTimeout);
+        return { lock: lock, acquired: acquired };
+      } catch (e) {
+        return { lock: null, acquired: false };
+      }
+    }
+    return { lock: null, acquired: true };
+  };
+
+  /**
+   * Release lock safely
+   */
+  ShiftServiceClass.prototype._releaseLock = function(lockObj) {
+    if (lockObj && lockObj.lock && lockObj.acquired) {
+      try {
+        lockObj.lock.releaseLock();
+      } catch (e) {
+        // ignore
+      }
+    }
+  };
+
+  /**
+   * Log audit record
+   */
+  ShiftServiceClass.prototype.logAudit = function(employeeId, action, outcome, details, performedBy) {
     try {
-      const { employeeId, lat, lon, accuracy } = params;
-      
+      if (!_SheetsService) return;
+      var auditId = _SheetsService.generateAuditId();
+      var auditData = {
+        ID: auditId,
+        'Employee ID': employeeId,
+        Action: action,
+        Outcome: outcome,
+        Timestamp: new Date().toISOString(),
+        'Performed By': performedBy || employeeId || 'system',
+        Details: details
+      };
+      _SheetsService.appendRow(_SHEETS.AUDIT_LOGS, auditData);
+    } catch (e) {
+      if (typeof Logger !== 'undefined') Logger.log('Audit error: ' + e);
+    }
+  };
+
+  /**
+   * Start a new shift
+   * @param {Object} params - { employeeId, lat, lon, accuracy }
+   * @returns {Object}
+   */
+  ShiftServiceClass.prototype.startShift = function(params) {
+    var lockResult = this._acquireLock();
+    if (!lockResult.acquired) {
+      return { success: false, message: 'Server is currently processing another request. Please retry in a few seconds.' };
+    }
+
+    try {
+      var employeeId = (params.employeeId || '').trim().toUpperCase();
+      var lat = parseFloat(params.lat);
+      var lon = parseFloat(params.lon);
+      var accuracy = parseFloat(params.accuracy);
+
       if (!employeeId) {
-        return this.errorResponse('Employee ID required');
+        return { success: false, message: 'Employee ID is required' };
       }
 
-      // Get employee data
-      const employee = this.sheets.getEmployeeById(employeeId);
+      var employee = _SheetsService.getEmployeeById(employeeId);
       if (!employee) {
-        return this.errorResponse('Employee not found');
+        return { success: false, message: 'Employee not found' };
       }
 
       if (employee.Status !== 'Active') {
-        return this.errorResponse('Employee is not active');
+        return { success: false, message: 'Employee account is not active' };
       }
 
-      const siteId = employee['Site ID'] || employee.SiteID;
+      var siteId = employee['Site ID'] || employee.SiteID;
       if (!siteId) {
-        return this.errorResponse('Employee not assigned to a site');
+        return { success: false, message: 'Employee is not assigned to a job site. Please contact Ateeb.' };
       }
 
-      // Validate location
-      const locationValidation = this.location.validateLocation({
-        lat: parseFloat(lat),
-        lon: parseFloat(lon),
-        accuracy: parseFloat(accuracy),
-        siteId
-      });
-
-      if (!locationValidation.valid) {
-        return {
-          success: false,
-          message: 'Location validation failed: ' + locationValidation.message,
-          accuracy: locationValidation.accuracy,
-          distance: locationValidation.distance
+      // Check if employee already has an active shift (duplicate prevention)
+      var activeShift = this.getActiveShift(employeeId);
+      if (activeShift) {
+        return { 
+          success: false, 
+          message: 'You already have an active shift started at ' + activeShift['Start Time'] + '. Please end that shift before starting a new one.',
+          activeShift: activeShift
         };
       }
 
-      // Check for existing active shift
-      const activeShift = this.getActiveShift(employeeId);
-      if (activeShift) {
-        return this.errorResponse('Employee already has an active shift');
+      // Mandatory GPS validation against assigned site
+      var locationCheck = _LocationService.validateLocation({
+        lat: lat,
+        lon: lon,
+        accuracy: accuracy,
+        siteId: siteId
+      });
+
+      if (!locationCheck.valid) {
+        this.logAudit(employeeId, 'start_shift', 'failed', 'GPS validation failed: ' + locationCheck.message);
+        return {
+          success: false,
+          message: locationCheck.message,
+          accuracy: locationCheck.accuracy,
+          distance: locationCheck.distance,
+          geofenceRadius: locationCheck.geofenceRadius,
+          errorType: 'GEOLOCATION_VALIDATION_FAILED'
+        };
       }
 
-      // Create new shift
-      const shiftId = this.sheets.generateShiftId();
-      const startTime = new Date().toISOString();
-      
-      const shiftData = {
+      // Generate server timestamp
+      var serverStartTime = new Date().toISOString();
+      var shiftId = _SheetsService.generateShiftId();
+
+      var shiftData = {
         ID: shiftId,
         'Employee ID': employeeId,
         'Site ID': siteId,
-        'Start Time': startTime,
+        'Start Time': serverStartTime,
         'End Time': '',
         'Start Latitude': lat,
         'Start Longitude': lon,
@@ -85,220 +161,201 @@ class ShiftService {
         'Regular Hours': 0,
         'Overtime Hours': 0,
         Status: 'Active',
-        'Created At': startTime
+        'Created At': serverStartTime
       };
 
-      this.sheets.appendRow(CONFIG.SHEETS.SHIFTS, shiftData);
-
-      // Log audit event
-      this.logAudit(employeeId, 'Start Shift', 'success', `Started shift ${shiftId} at site ${siteId}`);
+      _SheetsService.appendRow(_SHEETS.SHIFTS, shiftData);
+      this.logAudit(employeeId, 'start_shift', 'success', 'Started shift ' + shiftId + ' at ' + (locationCheck.siteName || siteId));
 
       return {
         success: true,
-        shiftId,
-        startTime,
-        siteId,
+        shiftId: shiftId,
+        startTime: serverStartTime,
+        siteId: siteId,
+        siteName: locationCheck.siteName || siteId,
+        distance: locationCheck.distance,
+        accuracy: locationCheck.accuracy,
         message: 'Shift started successfully'
       };
-    } catch (error) {
-      logError('Start shift error', error);
-      return this.errorResponse('Failed to start shift');
+    } catch (err) {
+      if (typeof Logger !== 'undefined') Logger.log('Start shift error: ' + err);
+      return { success: false, message: 'Failed to start shift: ' + (err.message || err) };
+    } finally {
+      this._releaseLock(lockResult);
     }
-  }
+  };
 
   /**
    * End an active shift
-   * @param {Object} params - Request parameters
-   * @returns {Object} Shift end result with overtime calculation
+   * @param {Object} params - { employeeId, lat, lon, accuracy }
+   * @returns {Object}
    */
-  endShift(params) {
+  ShiftServiceClass.prototype.endShift = function(params) {
+    var lockResult = this._acquireLock();
+    if (!lockResult.acquired) {
+      return { success: false, message: 'Server is currently processing another request. Please retry in a few seconds.' };
+    }
+
     try {
-      const { employeeId, lat, lon, accuracy } = params;
-      
+      var employeeId = (params.employeeId || '').trim().toUpperCase();
+      var lat = parseFloat(params.lat);
+      var lon = parseFloat(params.lon);
+      var accuracy = parseFloat(params.accuracy);
+
       if (!employeeId) {
-        return this.errorResponse('Employee ID required');
+        return { success: false, message: 'Employee ID is required' };
       }
 
-      // Find active shift
-      const activeShift = this.getActiveShift(employeeId);
+      var activeShift = this.getActiveShift(employeeId);
       if (!activeShift) {
-        return this.errorResponse('No active shift found');
+        return { success: false, message: 'No active shift found for this employee to end.' };
       }
 
-      const siteId = activeShift['Site ID'];
-      
-      // Validate location
-      const locationValidation = this.location.validateLocation({
-        lat: parseFloat(lat),
-        lon: parseFloat(lon),
-        accuracy: parseFloat(accuracy),
-        siteId
+      var siteId = activeShift['Site ID'];
+
+      // Mandatory GPS validation at shift end
+      var locationCheck = _LocationService.validateLocation({
+        lat: lat,
+        lon: lon,
+        accuracy: accuracy,
+        siteId: siteId
       });
 
-      if (!locationValidation.valid) {
+      if (!locationCheck.valid) {
+        this.logAudit(employeeId, 'end_shift', 'failed', 'GPS validation failed on clock out: ' + locationCheck.message);
         return {
           success: false,
-          message: 'Location validation failed: ' + locationValidation.message,
-          accuracy: locationValidation.accuracy,
-          distance: locationValidation.distance
+          message: locationCheck.message,
+          accuracy: locationCheck.accuracy,
+          distance: locationCheck.distance,
+          geofenceRadius: locationCheck.geofenceRadius,
+          errorType: 'GEOLOCATION_VALIDATION_FAILED'
         };
       }
 
-      const endTime = new Date().toISOString();
-      
-      // Calculate hours
-      const { regularHours, overtimeHours, totalHours } = this.calculateHours(
-        activeShift['Start Time'],
-        endTime,
-        activeShift['Break Minutes']
-      );
+      // Server-side clock out timestamp
+      var serverEndTime = new Date().toISOString();
 
-      // Update shift record
-      const updateData = {
-        'End Time': endTime,
+      // Calculate worked, regular, and overtime hours
+      var breakMin = parseFloat(activeShift['Break Minutes'] || this.breakDuration);
+      var hoursCalc = this.calculateHours(activeShift['Start Time'], serverEndTime, breakMin);
+
+      var updateData = {
+        'End Time': serverEndTime,
         'End Latitude': lat,
         'End Longitude': lon,
         'End Accuracy': accuracy,
-        'Regular Hours': regularHours,
-        'Overtime Hours': overtimeHours,
+        'Regular Hours': hoursCalc.regularHours,
+        'Overtime Hours': hoursCalc.overtimeHours,
         Status: 'Completed'
       };
 
-      this.sheets.updateRow(CONFIG.SHEETS.SHIFTS, activeShift.ID, updateData);
+      _SheetsService.updateRow(_SHEETS.SHIFTS, activeShift.ID, updateData);
 
-      // If overtime, create overtime record
-      if (overtimeHours > 0) {
-        this.createOvertimeRecord(activeShift.ID, employeeId, endTime, overtimeHours);
+      // Create pending overtime record if overtime was performed
+      var overtimeId = null;
+      if (hoursCalc.overtimeHours > 0) {
+        overtimeId = this.createOvertimeRecord(activeShift.ID, employeeId, serverEndTime, hoursCalc.overtimeHours);
       }
 
-      // Log audit event
-      this.logAudit(employeeId, 'End Shift', 'success', 
-        `Ended shift ${activeShift.ID}. Hours: ${totalHours.toFixed(2)} (Reg: ${regularHours}, OT: ${overtimeHours})`);
+      var auditDetails = 'Ended shift ' + activeShift.ID + '. Total: ' + hoursCalc.totalHours + 'h (Regular: ' + hoursCalc.regularHours + 'h, OT: ' + hoursCalc.overtimeHours + 'h)';
+      this.logAudit(employeeId, 'end_shift', 'success', auditDetails);
 
       return {
         success: true,
         shiftId: activeShift.ID,
-        endTime,
-        regularHours,
-        overtimeHours,
-        totalHours,
+        startTime: activeShift['Start Time'],
+        endTime: serverEndTime,
+        totalHours: hoursCalc.totalHours,
+        regularHours: hoursCalc.regularHours,
+        overtimeHours: hoursCalc.overtimeHours,
+        overtimeId: overtimeId,
         message: 'Shift ended successfully'
       };
-    } catch (error) {
-      logError('End shift error', error);
-      return this.errorResponse('Failed to end shift');
+    } catch (err) {
+      if (typeof Logger !== 'undefined') Logger.log('End shift error: ' + err);
+      return { success: false, message: 'Failed to end shift: ' + (err.message || err) };
+    } finally {
+      this._releaseLock(lockResult);
     }
-  }
+  };
 
   /**
    * Get active shift for employee
-   * @param {string} employeeId
-   * @returns {Object|null}
    */
-  getActiveShift(employeeId) {
-    const shifts = this.sheets.getAllShifts();
-    return shifts.find(s => s['Employee ID'] === employeeId && s.Status === 'Active') || null;
-  }
-
-  /**
-   * Calculate regular and overtime hours
-   * @param {string} startTime
-   * @param {string} endTime
-   * @param {number} breakMinutes
-   * @returns {Object} Hours breakdown
-   */
-  calculateHours(startTime, endTime, breakMinutes) {
-    const start = new Date(startTime);
-    const end = new Date(endTime);
-    
-    // Handle overnight shifts
-    let totalMs = end - start;
-    if (totalMs < 0) {
-      totalMs += 24 * 60 * 60 * 1000; // Add 24 hours for overnight
+  ShiftServiceClass.prototype.getActiveShift = function(employeeId) {
+    var shifts = _SheetsService.getAllShifts();
+    for (var i = 0; i < shifts.length; i++) {
+      if (shifts[i]['Employee ID'] === employeeId && shifts[i].Status === 'Active') {
+        return shifts[i];
+      }
     }
-    
-    const totalHours = totalMs / (1000 * 60 * 60);
-    const workedHours = totalHours - (breakMinutes / 60);
-    
-    const regularHours = Math.min(workedHours, this.regularHours);
-    const overtimeHours = Math.max(0, workedHours - this.regularHours);
-    
-    return {
-      totalHours: Math.max(0, workedHours),
-      regularHours: Math.round(regularHours * 100) / 100,
-      overtimeHours: Math.round(overtimeHours * 100) / 100
-    };
-  }
+    return null;
+  };
 
   /**
-   * Create overtime record
-   * @param {string} shiftId
-   * @param {string} employeeId
-   * @param {string} date
-   * @param {number} overtimeHours
+   * Calculate regular and overtime hours with break and overnight shift handling
+   * @param {string} startTime - ISO string
+   * @param {string} endTime - ISO string
+   * @param {number} breakMinutes
+   * @returns {{ totalHours: number, regularHours: number, overtimeHours: number }}
    */
-  createOvertimeRecord(shiftId, employeeId, date, overtimeHours) {
-    const otId = this.sheets.generateOvertimeId();
-    const otData = {
+  ShiftServiceClass.prototype.calculateHours = function(startTime, endTime, breakMinutes) {
+    var start = new Date(startTime).getTime();
+    var end = new Date(endTime).getTime();
+
+    var diffMs = end - start;
+    if (diffMs < 0) {
+      // Overnight fallback if only time was compared
+      diffMs += 24 * 60 * 60 * 1000;
+    }
+
+    var totalElapsedHours = diffMs / (1000 * 60 * 60);
+    var breakHours = (breakMinutes || 0) / 60;
+    var netWorkedHours = Math.max(0, totalElapsedHours - breakHours);
+
+    var regular = Math.min(netWorkedHours, this.regularHours);
+    var overtime = Math.max(0, netWorkedHours - this.regularHours);
+
+    return {
+      totalHours: Math.round(netWorkedHours * 100) / 100,
+      regularHours: Math.round(regular * 100) / 100,
+      overtimeHours: Math.round(overtime * 100) / 100
+    };
+  };
+
+  /**
+   * Create pending overtime record
+   */
+  ShiftServiceClass.prototype.createOvertimeRecord = function(shiftId, employeeId, dateIso, overtimeHours) {
+    var otId = _SheetsService.generateOvertimeId();
+    var dateOnly = dateIso.split('T')[0];
+    var otData = {
       ID: otId,
       'Shift ID': shiftId,
       'Employee ID': employeeId,
-      Date: new Date(date).toISOString().split('T')[0],
+      Date: dateOnly,
       'Overtime Hours': overtimeHours,
       'Approval Status': 'Pending',
       'Approved By': '',
       'Approved At': '',
       'Created At': new Date().toISOString()
     };
-    this.sheets.appendRow(CONFIG.SHEETS.OVERTIME, otData);
-  }
+    _SheetsService.appendRow(_SHEETS.OVERTIME, otData);
+    return otId;
+  };
 
   /**
    * Get shifts for employee
-   * @param {string} employeeId
-   * @returns {Object[]}
    */
-  getEmployeeShifts(employeeId) {
-    const shifts = this.sheets.getAllShifts();
-    return shifts.filter(s => s['Employee ID'] === employeeId);
-  }
+  ShiftServiceClass.prototype.getEmployeeShifts = function(employeeId) {
+    var all = _SheetsService.getAllShifts();
+    return all.filter(function(s) { return s['Employee ID'] === employeeId; });
+  };
 
-  /**
-   * Get all shifts
-   * @returns {Object[]}
-   */
-  getAllShifts() {
-    return this.sheets.getAllShifts();
-  }
+  return new ShiftServiceClass();
+})();
 
-  /**
-   * Log audit event
-   * @param {string} employeeId
-   * @param {string} action
-   * @param {string} outcome
-   * @param {string} details
-   */
-  logAudit(employeeId, action, outcome, details) {
-    try {
-      const auditId = this.sheets.generateAuditId();
-      const auditData = {
-        ID: auditId,
-        'Employee ID': employeeId,
-        Action: action,
-        Outcome: outcome,
-        Timestamp: new Date().toISOString(),
-        'Performed By': 'system',
-        Details: details
-      };
-      this.sheets.appendRow(CONFIG.SHEETS.AUDIT_LOGS, auditData);
-    } catch (error) {
-      logError('Failed to log audit', error);
-    }
-  }
-
-  errorResponse(message) {
-    return { success: false, message };
-  }
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = ShiftService;
 }
-
-module.exports = new ShiftService();
