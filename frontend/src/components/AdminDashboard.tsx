@@ -14,6 +14,7 @@ import {
   generateDailyReport,
 } from '@/lib/api';
 import ChangePinModal from '@/components/ChangePinModal';
+import JobSiteModal from '@/components/JobSiteModal';
 
 interface DailyReportData {
   date: string;
@@ -84,6 +85,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
   // Modals state
   const [showAddEmpModal, setShowAddEmpModal] = useState(false);
   const [showAddSiteModal, setShowAddSiteModal] = useState(false);
+  const [siteToEdit, setSiteToEdit] = useState<JobSite | null>(null);
   const [submittingModal, setSubmittingModal] = useState(false);
   const [showPinModal, setShowPinModal] = useState(false);
 
@@ -92,13 +94,6 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
   const [newEmpPhone, setNewEmpPhone] = useState('');
   const [newEmpSiteId, setNewEmpSiteId] = useState('');
   const [newEmpPin, setNewEmpPin] = useState('');
-
-  // New Job Site Form
-  const [newSiteName, setNewSiteName] = useState('');
-  const [newSiteAddress, setNewSiteAddress] = useState('');
-  const [newSiteLat, setNewSiteLat] = useState('25.2533');
-  const [newSiteLon, setNewSiteLon] = useState('55.3652');
-  const [newSiteRadius, setNewSiteRadius] = useState('100');
 
   const handleCreateEmployee = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -124,37 +119,6 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
         handleRefresh();
       } else {
         setActionMessage({ type: 'error', text: res.message || 'Failed to create employee' });
-      }
-    } catch (err: unknown) {
-      setActionMessage({ type: 'error', text: (err as Error).message });
-    } finally {
-      setSubmittingModal(false);
-    }
-  };
-
-  const handleCreateJobSite = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newSiteName.trim() || !newSiteLat || !newSiteLon) {
-      setActionMessage({ type: 'error', text: 'Site Name and GPS Coordinates are required' });
-      return;
-    }
-    setSubmittingModal(true);
-    try {
-      const res = await createJobSite(session.token, {
-        name: newSiteName.trim(),
-        address: newSiteAddress.trim(),
-        latitude: parseFloat(newSiteLat),
-        longitude: parseFloat(newSiteLon),
-        geofenceRadius: parseInt(newSiteRadius, 10) || 100,
-      });
-      if (res.success) {
-        setActionMessage({ type: 'success', text: `Job Site ${newSiteName} created successfully in Google Sheets!` });
-        setShowAddSiteModal(false);
-        setNewSiteName('');
-        setNewSiteAddress('');
-        handleRefresh();
-      } else {
-        setActionMessage({ type: 'error', text: res.message || 'Failed to create job site' });
       }
     } catch (err: unknown) {
       setActionMessage({ type: 'error', text: (err as Error).message });
@@ -789,7 +753,10 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                     Registered Job Sites & Geofences
                   </h2>
                   <button
-                    onClick={() => setShowAddSiteModal(true)}
+                    onClick={() => {
+                      setSiteToEdit(null);
+                      setShowAddSiteModal(true);
+                    }}
                     className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-md shadow-blue-600/30 transition-all flex items-center gap-1.5 cursor-pointer"
                   >
                     <span>+</span>
@@ -807,7 +774,8 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                           <th className="py-2.5 pr-4">Site Name</th>
                           <th className="py-2.5 pr-4">Coordinates (Lat, Lon)</th>
                           <th className="py-2.5 pr-4">Geofence Radius</th>
-                          <th className="py-2.5">Status</th>
+                          <th className="py-2.5 pr-4">Status</th>
+                          <th className="py-2.5">Action</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800">
@@ -816,13 +784,24 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                             <td className="py-3 pr-4 font-mono font-medium text-blue-400">{site.ID}</td>
                             <td className="py-3 pr-4 text-white font-medium">{site.Name}</td>
                             <td className="py-3 pr-4 font-mono text-slate-400">
-                              {site.Latitude}, {site.Longitude}
+                              {site.Latitude.toFixed(6)}, {site.Longitude.toFixed(6)}
                             </td>
                             <td className="py-3 pr-4 font-mono">{site['Geofence Radius']}m</td>
-                            <td className="py-3">
+                            <td className="py-3 pr-4">
                               <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                                 {site.Status}
                               </span>
+                            </td>
+                            <td className="py-3">
+                              <button
+                                onClick={() => {
+                                  setSiteToEdit(site);
+                                  setShowAddSiteModal(true);
+                                }}
+                                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-blue-400 hover:text-blue-300 rounded-lg text-xs font-semibold border border-slate-700 transition-all cursor-pointer"
+                              >
+                                Edit Location
+                              </button>
                             </td>
                           </tr>
                         ))}
@@ -976,109 +955,22 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
         </div>
       )}
 
-      {/* Add Job Site Modal */}
+      {/* Add / Edit Job Site Modal */}
       {showAddSiteModal && (
-        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="glass-panel bg-slate-900 border border-slate-700 rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl">
-            <h3 className="text-lg font-bold text-white mb-2">Create New Job Site</h3>
-            <p className="text-xs text-slate-400 mb-6">
-              Defines site GPS center coordinates and geofence enforcement radius for clock-in verification.
-            </p>
-
-            <form onSubmit={handleCreateJobSite} className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
-                  Site Name
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Dubai Marina Tower Phase 2"
-                  value={newSiteName}
-                  onChange={(e) => setNewSiteName(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
-                  Address / Location Notes
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. Dubai Marina, UAE"
-                  value={newSiteAddress}
-                  onChange={(e) => setNewSiteAddress(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
-                    Latitude
-                  </label>
-                  <input
-                    type="number"
-                    step="any"
-                    required
-                    placeholder="25.2533"
-                    value={newSiteLat}
-                    onChange={(e) => setNewSiteLat(e.target.value)}
-                    className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
-                    Longitude
-                  </label>
-                  <input
-                    type="number"
-                    step="any"
-                    required
-                    placeholder="55.3652"
-                    value={newSiteLon}
-                    onChange={(e) => setNewSiteLon(e.target.value)}
-                    className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
-                  Geofence Radius (Meters)
-                </label>
-                <input
-                  type="number"
-                  min="30"
-                  max="1000"
-                  required
-                  placeholder="100"
-                  value={newSiteRadius}
-                  onChange={(e) => setNewSiteRadius(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-
-              <div className="flex gap-3 pt-4">
-                <button
-                  type="button"
-                  onClick={() => setShowAddSiteModal(false)}
-                  className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-slate-300 bg-slate-800 hover:bg-slate-700 border border-slate-700 transition-all cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={submittingModal}
-                  className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 shadow-lg shadow-blue-600/30 transition-all disabled:opacity-50 cursor-pointer"
-                >
-                  {submittingModal ? 'Saving...' : 'Save Job Site'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <JobSiteModal
+          token={session.token}
+          siteToEdit={siteToEdit}
+          onClose={() => {
+            setShowAddSiteModal(false);
+            setSiteToEdit(null);
+          }}
+          onSaved={(msg) => {
+            setActionMessage({ type: 'success', text: msg });
+            setShowAddSiteModal(false);
+            setSiteToEdit(null);
+            handleRefresh();
+          }}
+        />
       )}
 
       {/* Change PIN Modal */}

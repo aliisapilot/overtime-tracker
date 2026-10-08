@@ -130,6 +130,8 @@ function doPost(e) {
         return jsonResponse(_AdminService.getJobSites(params));
       case 'createJobSite':
         return jsonResponse(_AdminService.createJobSite(params, session));
+      case 'updateJobSite':
+        return jsonResponse(_AdminService.updateJobSite(params, session));
       case 'getEmployees':
         return jsonResponse(_AdminService.getEmployees(params));
       case 'createEmployee':

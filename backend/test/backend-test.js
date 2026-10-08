@@ -466,6 +466,68 @@ runTest('Admin daily attendance report generates correctly', () => {
   assert.ok(res.report.totalShifts >= 1);
 });
 
+runTest('Admin can create a new job site with coordinate validation', () => {
+  // Test rejection of invalid latitude
+  const invalidReq = {
+    postData: {
+      contents: JSON.stringify({
+        action: 'createJobSite',
+        name: 'Invalid Lat Site',
+        lat: 95.0, // Invalid: > 90
+        lon: 55.2,
+        geofenceRadius: 100,
+        token: adminToken
+      })
+    }
+  };
+  const rawInvalid = Code.doPost(invalidReq);
+  const resInvalid = (rawInvalid && typeof rawInvalid.getContent === 'function') ? JSON.parse(rawInvalid.getContent()) : rawInvalid;
+  assert.strictEqual(resInvalid.success, false);
+
+  // Test valid creation
+  const validReq = {
+    postData: {
+      contents: JSON.stringify({
+        action: 'createJobSite',
+        name: 'Dubai Hills Estate Sector 4',
+        address: 'Dubai Hills, Dubai, UAE',
+        lat: 25.1124,
+        lon: 55.2635,
+        geofenceRadius: 150,
+        token: adminToken
+      })
+    }
+  };
+  const rawValid = Code.doPost(validReq);
+  const resValid = (rawValid && typeof rawValid.getContent === 'function') ? JSON.parse(rawValid.getContent()) : rawValid;
+  assert.strictEqual(resValid.success, true);
+  assert.ok(resValid.siteId.startsWith('SITE'));
+  assert.strictEqual(resValid.jobSite.Name, 'Dubai Hills Estate Sector 4');
+  assert.strictEqual(resValid.jobSite['Geofence Radius'], 150);
+
+  // Test updating the newly created job site
+  const updateReq = {
+    postData: {
+      contents: JSON.stringify({
+        action: 'updateJobSite',
+        siteId: resValid.siteId,
+        name: 'Dubai Hills Estate Sector 4 (Updated)',
+        address: 'Dubai Hills Sector 4 Gate 2',
+        lat: 25.1130,
+        lon: 55.2640,
+        geofenceRadius: 200,
+        token: adminToken
+      })
+    }
+  };
+  const rawUpdate = Code.doPost(updateReq);
+  const resUpdate = (rawUpdate && typeof rawUpdate.getContent === 'function') ? JSON.parse(rawUpdate.getContent()) : rawUpdate;
+  assert.strictEqual(resUpdate.success, true);
+  assert.strictEqual(resUpdate.jobSite.Name, 'Dubai Hills Estate Sector 4 (Updated)');
+  assert.strictEqual(resUpdate.jobSite.Latitude, 25.113);
+  assert.strictEqual(resUpdate.jobSite['Geofence Radius'], 200);
+});
+
 runTest('Audit logs record all sensitive actions', () => {
   const auditLogs = SheetsService.getAllRows(SHEETS.AUDIT_LOGS);
   assert.ok(auditLogs.length >= 5, 'Audit log must record multiple events');

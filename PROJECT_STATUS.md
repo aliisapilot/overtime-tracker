@@ -26,9 +26,15 @@
   - Sync Data button for instant Google Sheets refresh.
 - [x] **Daily Reports & CSV Export (Admin Portal)**: Real-time query by date with KPI summary cards, site-by-site breakdown, employee breakdown, and formatted CSV export.
 - [x] **Leaflet + OpenStreetMap Visual Geofencing**: Added interactive OpenStreetMap visualization on Labourer Dashboard displaying assigned site marker, circular geofence boundary, live GPS location marker, and accuracy radius.
-- [x] **Workforce & Job Site Creation (Admin Portal)**:
-  - Register Labourer modal: Directly creates new employees in Google Sheets with PBKDF2 hash (25k iter).
-  - Add Job Site modal: Creates new job sites with coordinates and geofence radii directly in Google Sheets.
+- [x] **Smart Job Site Location Picker & Editor (Admin Portal)**:
+  - Replaced manual latitude/longitude entry with a streamlined, mobile-friendly location selector.
+  - Automatic Google Maps link parsing: extracts pinned coordinates (`!3d/!4d`), path coordinates (`/@lat,lon`), query coordinates (`?q=lat,lon`), and place names.
+  - Safe handling of shortened links (`maps.app.goo.gl`) with guidance and one-click Google Maps open.
+  - Free OpenStreetMap Nominatim address search with rate limiting and attribution.
+  - Interactive Leaflet map with draggable pin, map tap-to-reposition, and "Use My Current Location" button.
+  - Visual dynamic geofence radius circle with quick presets (50m, 100m, 200m, Custom).
+  - Full Job Site editing support (`updateJobSite`) for modifying existing job sites without data loss.
+  - Strict backend & frontend coordinate range validation (-90 to 90, -180 to 180, radius 10m–5000m).
 - [x] **PWA Mobile Application Support**: Configured Web App Manifest (`manifest.json`), high-resolution SVG app icon (`icon.svg`), standalone display tags, and service worker (`sw.js`) for mobile home-screen installation.
 - [x] **Attendance CSV Export**: One-click download of attendance shifts into a formatted `.csv` file for payroll processing.
 - [x] **Self-Service PIN Rotation**: Implemented Change PIN modal for labourers and administrator, verifying current PIN and updating with PBKDF2 cryptography (25,000 iterations).

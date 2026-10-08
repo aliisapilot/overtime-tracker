@@ -260,6 +260,20 @@ export async function createJobSite(
 }
 
 /**
+ * Admin: Update Existing Job Site
+ */
+export async function updateJobSite(
+  token: string,
+  data: { siteId: string; name: string; address?: string; latitude: number; longitude: number; geofenceRadius: number; status?: string }
+): Promise<ApiResponse<{ site: JobSite }>> {
+  return sendGasRequest<{ site: JobSite }>({
+    action: 'updateJobSite',
+    token,
+    ...data,
+  });
+}
+
+/**
  * Admin: Get All Employees
  */
 export async function getEmployees(token: string): Promise<ApiResponse<{ employees: EmployeeProfile[] }>> {

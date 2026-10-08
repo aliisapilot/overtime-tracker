@@ -76,15 +76,18 @@ var AdminService = (function() {
     try {
       var name = (params.name || '').trim();
       var address = (params.address || '').trim();
-      var lat = parseFloat(params.lat);
-      var lon = parseFloat(params.lon);
-      var geofenceRadius = parseFloat(params.geofenceRadius || _CONFIG.DEFAULT_GEOFENCE_RADIUS || 100);
+      var lat = parseFloat(params.lat != null ? params.lat : params.latitude);
+      var lon = parseFloat(params.lon != null ? params.lon : (params.longitude != null ? params.longitude : params.lng));
+      var geofenceRadius = parseFloat(params.geofenceRadius || params['Geofence Radius'] || _CONFIG.DEFAULT_GEOFENCE_RADIUS || 100);
 
       if (!name) {
         return { success: false, message: 'Job site name is required' };
       }
-      if (isNaN(lat) || isNaN(lon)) {
-        return { success: false, message: 'Valid latitude and longitude coordinates are required' };
+      if (isNaN(lat) || isNaN(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+        return { success: false, message: 'Valid latitude (-90 to 90) and longitude (-180 to 180) coordinates are required' };
+      }
+      if (isNaN(geofenceRadius) || geofenceRadius < 10 || geofenceRadius > 5000) {
+        return { success: false, message: 'Geofence radius must be between 10m and 5000m' };
       }
 
       var siteId = _SheetsService.generateSiteId();
@@ -94,14 +97,14 @@ var AdminService = (function() {
         Address: address,
         Latitude: lat,
         Longitude: lon,
-        'Geofence Radius': geofenceRadius,
+        'Geofence Radius': Math.round(geofenceRadius),
         Status: 'Active',
         'Created At': new Date().toISOString()
       };
 
       _SheetsService.appendRow(_SHEETS.JOB_SITES, siteData);
       var adminName = session ? session.name : 'Admin';
-      this.logAudit('SYSTEM', 'create_job_site', 'success', 'Created site ' + siteId + ': ' + name + ' (' + lat + ', ' + lon + ')', adminName);
+      this.logAudit('SYSTEM', 'create_job_site', 'success', 'Created site ' + siteId + ': ' + name + ' (' + lat + ', ' + lon + ', ' + geofenceRadius + 'm)', adminName);
 
       return {
         success: true,
@@ -111,6 +114,64 @@ var AdminService = (function() {
       };
     } catch (error) {
       return { success: false, message: 'Failed to create job site: ' + (error.message || error) };
+    }
+  };
+
+  /**
+   * Update an existing job site
+   */
+  AdminServiceClass.prototype.updateJobSite = function(params, session) {
+    try {
+      var siteId = (params.siteId || params.id || params.ID || '').trim();
+      var name = (params.name || params.Name || '').trim();
+      var address = (params.address != null ? params.address : (params.Address || '')).trim();
+      var lat = parseFloat(params.lat != null ? params.lat : params.latitude);
+      var lon = parseFloat(params.lon != null ? params.lon : (params.longitude != null ? params.longitude : params.lng));
+      var geofenceRadius = parseFloat(params.geofenceRadius || params['Geofence Radius'] || _CONFIG.DEFAULT_GEOFENCE_RADIUS || 100);
+      var status = (params.status || params.Status || 'Active').trim();
+
+      if (!siteId) {
+        return { success: false, message: 'Job site ID is required' };
+      }
+      var existingSite = _SheetsService.getJobSiteById(siteId);
+      if (!existingSite) {
+        return { success: false, message: 'Job site not found: ' + siteId };
+      }
+      if (!name) {
+        return { success: false, message: 'Job site name is required' };
+      }
+      if (isNaN(lat) || isNaN(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+        return { success: false, message: 'Valid latitude (-90 to 90) and longitude (-180 to 180) coordinates are required' };
+      }
+      if (isNaN(geofenceRadius) || geofenceRadius < 10 || geofenceRadius > 5000) {
+        return { success: false, message: 'Geofence radius must be between 10m and 5000m' };
+      }
+
+      var updateData = {
+        Name: name,
+        Address: address,
+        Latitude: lat,
+        Longitude: lon,
+        'Geofence Radius': Math.round(geofenceRadius),
+        Status: status
+      };
+
+      var updated = _SheetsService.updateRow(_SHEETS.JOB_SITES, siteId, updateData);
+      if (!updated) {
+        return { success: false, message: 'Failed to update job site in spreadsheet' };
+      }
+
+      var adminName = session ? session.name : 'Admin';
+      this.logAudit('SYSTEM', 'update_job_site', 'success', 'Updated site ' + siteId + ': ' + name + ' (' + lat + ', ' + lon + ', ' + geofenceRadius + 'm)', adminName);
+
+      return {
+        success: true,
+        siteId: siteId,
+        jobSite: Object.assign({}, existingSite, updateData),
+        message: 'Job site updated successfully'
+      };
+    } catch (error) {
+      return { success: false, message: 'Failed to update job site: ' + (error.message || error) };
     }
   };
 
