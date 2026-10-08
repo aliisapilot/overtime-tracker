@@ -173,12 +173,14 @@ runTest('Remote setupAdmin or init attempts via doPost are rejected as unknown a
 });
 
 const chosenAdminPin = '948123';
-runTest('Direct initialization with ADMIN_PIN property activates admin and securely removes plain text property', () => {
+runTest('Direct initialization with ADMIN_PIN property activates existing PendingSetup admin without duplicating rows', () => {
+  const initialCount = SheetsService.getAllEmployees().length;
+  
   // Simulate setting ADMIN_PIN in Script Properties
   SheetsService.setMockAdminPin(chosenAdminPin);
   
-  // Run direct init
-  const initResult = SheetsService.seedDefaultAdmin(null);
+  // Run direct activation via activateAdmin / seedDefaultAdmin
+  const initResult = Code.activateAdmin();
   assert.strictEqual(initResult.created, true);
 
   // Verify status in database
@@ -186,8 +188,18 @@ runTest('Direct initialization with ADMIN_PIN property activates admin and secur
   assert.strictEqual(admin.Status, 'Active');
   assert.ok(admin['PIN Hash'].startsWith('pbkdf2:25000:'));
 
+  // Verify employee count is identical (NO duplicate records created)
+  const afterCount = SheetsService.getAllEmployees().length;
+  assert.strictEqual(afterCount, initialCount, 'Activating existing admin must not duplicate employee records');
+
   // Verify plain text property is deleted (mockAdminPin is cleared)
   assert.strictEqual(SheetsService._mockAdminPin, null);
+
+  // Verify subsequent activation when already active does not duplicate rows or crash
+  const secondResult = Code.activateAdmin();
+  assert.strictEqual(secondResult.created, false);
+  assert.ok(secondResult.message.includes('already active'));
+  assert.strictEqual(SheetsService.getAllEmployees().length, initialCount);
 });
 
 // 3. AUTHENTICATION & SESSION TESTS

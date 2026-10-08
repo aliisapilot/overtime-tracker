@@ -188,13 +188,12 @@ var SheetsService = (function() {
    * Completely avoids logging PINs or setup tokens to Execution Logs
    */
   SheetsServiceClass.prototype.seedDefaultAdmin = function(sheet) {
-    if (!sheet && !this._mockData) return null;
+    if (!sheet && !this._mockData) {
+      sheet = this.getOrCreateSheet(_SHEETS.EMPLOYEES);
+    }
     
     // Check if EMP000 already exists
     var existingAdmin = this.findById(_SHEETS.EMPLOYEES, 'EMP000');
-    if (existingAdmin && existingAdmin.Status === 'Active') {
-      return { created: false, message: 'Admin account EMP000 is already active.' };
-    }
 
     var configuredPin = null;
     if (typeof PropertiesService !== 'undefined' && PropertiesService.getScriptProperties) {
@@ -205,8 +204,12 @@ var SheetsService = (function() {
     }
 
     if (!configuredPin) {
+      if (existingAdmin && existingAdmin.Status === 'Active') {
+        return { created: false, message: 'Admin account EMP000 is already active.' };
+      }
+
       if (typeof Logger !== 'undefined') {
-        Logger.log('[SECURITY NOTICE] To activate Administrator account (EMP000), set Script Property "ADMIN_PIN" in Project Settings and run init().');
+        Logger.log('[SECURITY NOTICE] To activate Administrator account (EMP000), set Script Property "ADMIN_PIN" in Project Settings and run activateAdmin() (or init()).');
       }
       if (!existingAdmin) {
         var placeholder = {
@@ -222,7 +225,7 @@ var SheetsService = (function() {
         };
         this.appendRow(_SHEETS.EMPLOYEES, placeholder);
       }
-      return { created: false, message: 'Admin account pending setup. Add Script Property ADMIN_PIN and re-run init().' };
+      return { created: false, message: 'Admin account pending setup. Add Script Property ADMIN_PIN and run activateAdmin().' };
     }
 
     // PIN is present in Script Properties: hash with standard PBKDF2 (25k iter, 32-char salt)
@@ -248,9 +251,10 @@ var SheetsService = (function() {
       this.appendRow(_SHEETS.EMPLOYEES, adminData);
     }
 
-    // Immediately and securely delete plain text ADMIN_PIN property so it never persists
+    // Immediately and securely delete plain text ADMIN_PIN property and any legacy tokens
     if (typeof PropertiesService !== 'undefined' && PropertiesService.getScriptProperties) {
       PropertiesService.getScriptProperties().deleteProperty('ADMIN_PIN');
+      PropertiesService.getScriptProperties().deleteProperty('ONE_TIME_SETUP_TOKEN');
     }
     this._mockAdminPin = null;
 

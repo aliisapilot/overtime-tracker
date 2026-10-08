@@ -4,9 +4,11 @@
  * Dual compatible with Google Apps Script runtime and Node.js
  */
 
-var _ConfigModule = (typeof CONFIG !== 'undefined') ? { CONFIG: CONFIG } : 
-  (typeof require !== 'undefined' ? require('./lib/Config') : { CONFIG: {} });
+var _ConfigModule = (typeof CONFIG !== 'undefined' && typeof SHEETS !== 'undefined') 
+  ? { CONFIG: CONFIG, SHEETS: SHEETS } 
+  : (typeof require !== 'undefined' ? require('./lib/Config') : { CONFIG: {}, SHEETS: {} });
 var _CONFIG = _ConfigModule.CONFIG;
+var _SHEETS = _ConfigModule.SHEETS;
 
 var _AuthService = (typeof AuthService !== 'undefined') ? AuthService : 
   (typeof require !== 'undefined' ? require('./services/AuthService') : null);
@@ -193,11 +195,31 @@ function init() {
   }
 }
 
+/**
+ * Activate or update Administrator account PIN directly
+ * Reads ADMIN_PIN from Project Settings -> Script Properties,
+ * updates EMP000 to Active, and securely deletes the plain text property.
+ * Can be run directly from the editor dropdown without altering other sheets.
+ */
+function activateAdmin() {
+  try {
+    if (typeof Logger !== 'undefined') Logger.log('Activating Administrator account EMP000...');
+    var sheet = _SheetsService.getOrCreateSheet(_SHEETS ? _SHEETS.EMPLOYEES : 'Employees');
+    var result = _SheetsService.seedDefaultAdmin(sheet);
+    if (typeof Logger !== 'undefined') Logger.log('Activation Result: ' + JSON.stringify(result));
+    return result;
+  } catch (err) {
+    if (typeof Logger !== 'undefined') Logger.log('Activation failed: ' + err);
+    throw err;
+  }
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     doGet: doGet,
     doPost: doPost,
     init: init,
+    activateAdmin: activateAdmin,
     jsonResponse: jsonResponse
   };
 }
