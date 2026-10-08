@@ -101,7 +101,7 @@ class ShiftService {
         message: 'Shift started successfully'
       };
     } catch (error) {
-      Logger.error('Start shift error: ' + error.message);
+      logError('Start shift error', error);
       return this.errorResponse('Failed to start shift');
     }
   }
@@ -185,7 +185,7 @@ class ShiftService {
         message: 'Shift ended successfully'
       };
     } catch (error) {
-      Logger.error('End shift error: ' + error.message);
+      logError('End shift error', error);
       return this.errorResponse('Failed to end shift');
     }
   }
@@ -292,7 +292,7 @@ class ShiftService {
       };
       this.sheets.appendRow(CONFIG.SHEETS.AUDIT_LOGS, auditData);
     } catch (error) {
-      Logger.error('Failed to log audit: ' + error.message);
+      logError('Failed to log audit', error);
     }
   }
 

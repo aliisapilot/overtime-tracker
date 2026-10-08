@@ -31,7 +31,7 @@ class AdminService {
         }))
       };
     } catch (error) {
-      Logger.error('Get job sites error: ' + error.message);
+      logError('Get job sites error', error);
       return this.errorResponse('Failed to get job sites');
     }
   }
@@ -57,7 +57,7 @@ class AdminService {
         }))
       };
     } catch (error) {
-      Logger.error('Get employees error: ' + error.message);
+      logError('Get employees error', error);
       return this.errorResponse('Failed to get employees');
     }
   }
@@ -119,7 +119,7 @@ class AdminService {
         attendance
       };
     } catch (error) {
-      Logger.error('Get attendance error: ' + error.message);
+      logError('Get attendance error', error);
       return this.errorResponse('Failed to get attendance');
     }
   }
@@ -158,7 +158,7 @@ class AdminService {
         message: 'Job site created successfully'
       };
     } catch (error) {
-      Logger.error('Create job site error: ' + error.message);
+      logError('Create job site error', error);
       return this.errorResponse('Failed to create job site');
     }
   }
@@ -207,7 +207,7 @@ class AdminService {
         message: 'Employee created successfully'
       };
     } catch (error) {
-      Logger.error('Create employee error: ' + error.message);
+      logError('Create employee error', error);
       return this.errorResponse('Failed to create employee');
     }
   }
@@ -240,7 +240,7 @@ class AdminService {
         message: 'Employee deactivated'
       };
     } catch (error) {
-      Logger.error('Deactivate employee error: ' + error.message);
+      logError('Deactivate employee error', error);
       return this.errorResponse('Failed to deactivate employee');
     }
   }
@@ -267,7 +267,7 @@ class AdminService {
         auditLogs: logs
       };
     } catch (error) {
-      Logger.error('Get audit logs error: ' + error.message);
+      logError('Get audit logs error', error);
       return this.errorResponse('Failed to get audit logs');
     }
   }
@@ -339,7 +339,7 @@ class AdminService {
         report
       };
     } catch (error) {
-      Logger.error('Generate daily report error: ' + error.message);
+      logError('Generate daily report error', error);
       return this.errorResponse('Failed to generate daily report');
     }
   }
@@ -402,7 +402,7 @@ class AdminService {
         report
       };
     } catch (error) {
-      Logger.error('Generate monthly report error: ' + error.message);
+      logError('Generate monthly report error', error);
       return this.errorResponse('Failed to generate monthly report');
     }
   }
@@ -428,7 +428,7 @@ class AdminService {
       };
       this.sheets.appendRow(CONFIG.SHEETS.AUDIT_LOGS, auditData);
     } catch (error) {
-      Logger.error('Failed to log audit: ' + error.message);
+      logError('Failed to log audit', error);
     }
   }
 

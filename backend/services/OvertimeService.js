@@ -55,7 +55,7 @@ class OvertimeService {
         message: `Overtime ${status.toLowerCase()}`
       };
     } catch (error) {
-      Logger.error('Approve overtime error: ' + error.message);
+      logError('Approve overtime error', error);
       return this.errorResponse('Failed to process overtime');
     }
   }
@@ -108,7 +108,7 @@ class OvertimeService {
       };
       this.sheets.appendRow(CONFIG.SHEETS.AUDIT_LOGS, auditData);
     } catch (error) {
-      Logger.error('Failed to log audit: ' + error.message);
+      logError('Failed to log audit', error);
     }
   }
 

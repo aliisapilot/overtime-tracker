@@ -67,7 +67,7 @@ class AuthService {
         isActive: true
       };
     } catch (error) {
-      Logger.error('Auth error: ' + error.message);
+      logError('Auth error', error);
       return this.errorResponse('Authentication failed');
     }
   }
@@ -109,7 +109,7 @@ class AuthService {
         }
       };
     } catch (error) {
-      Logger.error('Get employee data error: ' + error.message);
+      logError('Get employee data error', error);
       return this.errorResponse('Failed to get employee data');
     }
   }
@@ -172,7 +172,7 @@ class AuthService {
       };
       this.sheets.appendRow(CONFIG.SHEETS.AUDIT_LOGS, auditData);
     } catch (error) {
-      Logger.error('Failed to log auth event: ' + error.message);
+      logError('Failed to log auth event', error);
     }
   }
 
