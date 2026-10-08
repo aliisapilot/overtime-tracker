@@ -279,6 +279,69 @@ var AuthService = (function() {
     return { success: true, message: 'PIN updated successfully' };
   };
 
+  /**
+   * One-time secure administrator PIN setup
+   */
+  AuthServiceClass.prototype.setupAdmin = function(params) {
+    try {
+      var setupToken = (params.setupToken || '').trim();
+      var newPin = (params.newPin || '').trim();
+
+      if (!setupToken || !newPin) {
+        return { success: false, message: 'Setup token and new PIN are required' };
+      }
+
+      if (newPin.length < 4) {
+        return { success: false, message: 'Admin PIN must be at least 4 digits' };
+      }
+
+      // Check server setup token in Script Properties (or mock property for testing)
+      var storedToken = null;
+      if (typeof PropertiesService !== 'undefined' && PropertiesService.getScriptProperties) {
+        storedToken = PropertiesService.getScriptProperties().getProperty('ONE_TIME_SETUP_TOKEN');
+      } else if (this._mockSetupToken) {
+        storedToken = this._mockSetupToken;
+      }
+
+      if (!storedToken || storedToken !== setupToken) {
+        return { success: false, code: 403, message: 'Invalid or already used one-time setup token' };
+      }
+
+      var admin = _SheetsService.getEmployeeById('EMP000');
+      if (!admin) {
+        return { success: false, message: 'Admin account EMP000 not found' };
+      }
+
+      var newHash = _CryptoUtils.hashPin(newPin);
+      _SheetsService.updateRow(_SHEETS.EMPLOYEES, 'EMP000', {
+        'PIN Hash': newHash,
+        Status: 'Active'
+      });
+
+      // Permanently destroy one-time setup token
+      if (typeof PropertiesService !== 'undefined' && PropertiesService.getScriptProperties) {
+        PropertiesService.getScriptProperties().deleteProperty('ONE_TIME_SETUP_TOKEN');
+      }
+      this._mockSetupToken = null;
+
+      this.logAuthEvent('EMP000', 'admin_setup', 'success', 'Admin account activated via one-time setup token', 'Ateeb');
+
+      return {
+        success: true,
+        message: 'Admin account successfully activated. You can now log in with Employee ID EMP000 and your private PIN.'
+      };
+    } catch (err) {
+      return { success: false, message: 'Setup failed: ' + (err.message || err) };
+    }
+  };
+
+  /**
+   * Setter for mock setup token during automated tests
+   */
+  AuthServiceClass.prototype.setMockSetupToken = function(token) {
+    this._mockSetupToken = token;
+  };
+
   return new AuthServiceClass();
 })();
 

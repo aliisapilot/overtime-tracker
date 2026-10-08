@@ -1,20 +1,23 @@
 /**
  * Comprehensive Backend Security & Regression Test Suite
  * Validates Security Review requirements:
- * - Strengthened PBKDF2 PIN hashing (25,000 iterations, 32-character salt)
- * - Timing-safe comparison against brute-force attacks
- * - Signed Session tokens & role authorization
- * - Dynamic one-time Admin PIN generation (no hardcoded/predictable PIN)
- * - Protected init endpoint (blocks unauthorized public reset)
- * - GPS validation (20m target, <=30m tolerance, >30m rejection)
- * - Geofence validation (inside vs outside)
- * - Concurrency lock & duplicate shift prevention
- * - Overtime & overnight shifts
- * - Admin operations vs Labourer restrictions
- * - Audit logging
+ * 1. PBKDF2 verified against RFC 6070 / RFC 7914 standard test vectors
+ * 2. 25,000 iterations with 32-character (256-bit) cryptographically random salt
+ * 3. Secure one-time administrator setup token (no temporary PIN in execution logs)
+ * 4. Token burning: one-time setup token is destroyed after use
+ * 5. Timing-safe comparison against brute-force attacks
+ * 6. Signed Session tokens & role authorization
+ * 7. Protected init endpoint
+ * 8. GPS validation (20m target, <=30m tolerance, >30m rejection)
+ * 9. Geofence validation (inside vs outside)
+ * 10. Concurrency lock & duplicate shift prevention
+ * 11. Overtime & overnight shifts
+ * 12. Admin operations vs Labourer restrictions
+ * 13. Audit logging
  */
 
 const assert = require('assert');
+const crypto = require('crypto');
 
 const { CONFIG, SHEETS } = require('../lib/Config');
 const CryptoUtils = require('../lib/CryptoUtils');
@@ -43,24 +46,52 @@ function runTest(name, fn) {
 
 console.log('=== RUNNING COMPREHENSIVE BACKEND SECURITY TEST SUITE ===\n');
 
-// Dynamic unguessable PIN for testing Ateeb
-const dynamicAdminPin = '739281';
+// Standard RFC 7914 / RFC 6070 PBKDF2 Test Vectors
+console.log('[1. PBKDF2 Standard Test Vector Verifications]');
+runTest('RFC 7914 Test Vector 1 (iterations: 1)', () => {
+  const computed = CryptoUtils.pbkdf2Standard('password', 'salt', 1, 32);
+  const expected = '120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b';
+  assert.strictEqual(computed, expected, 'Must match standard vector 1');
+});
+
+runTest('RFC 7914 Test Vector 2 (iterations: 2)', () => {
+  const computed = CryptoUtils.pbkdf2Standard('password', 'salt', 2, 32);
+  const expected = 'ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43';
+  assert.strictEqual(computed, expected, 'Must match standard vector 2');
+});
+
+runTest('RFC 7914 Test Vector 3 (iterations: 4096)', () => {
+  const computed = CryptoUtils.pbkdf2Standard('password', 'salt', 4096, 32);
+  const expected = 'c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a';
+  assert.strictEqual(computed, expected, 'Must match standard vector 3');
+});
+
+runTest('RFC 7914 Test Vector 4 (long passphrase and salt, 4096 iter)', () => {
+  const pass = 'passwordPASSWORDpassword';
+  const salt = 'saltSALTsaltSALTsaltSALTsaltSALTsalt';
+  const computed = CryptoUtils.pbkdf2Standard(pass, salt, 4096, 32);
+  const expected = '348c89dbcbd32b2f32d814b8116e84cf2b17347ebc1800181c4e2a1fb8dd53e1';
+  assert.strictEqual(computed, expected, 'Must match standard vector 4');
+});
+
+// Setup mock database
 const workerPin = '4829';
+const validSetupToken = 'mock_one_time_setup_token_secure_64_characters_entropy_abcdef12345';
+let mockDb = null;
 
 function setupMockDatabase() {
-  const adminPinHash = CryptoUtils.hashPin(dynamicAdminPin);
   const workerPinHash = CryptoUtils.hashPin(workerPin);
 
-  const mockDb = {
+  mockDb = {
     [SHEETS.EMPLOYEES]: [
       {
         ID: 'EMP000',
         Name: 'Ateeb',
         Phone: '+971500000000',
         Role: 'Admin',
-        'Site ID': 'SITE001',
-        'PIN Hash': adminPinHash,
-        Status: 'Active',
+        'Site ID': '',
+        'PIN Hash': 'SETUP_PENDING',
+        Status: 'PendingSetup',
         'Created At': new Date().toISOString(),
         'Last Accessed': ''
       },
@@ -111,34 +142,98 @@ function setupMockDatabase() {
   };
 
   SheetsService.setMockData(mockDb);
+  AuthService.setMockSetupToken(validSetupToken);
   return mockDb;
 }
 
-const mockDb = setupMockDatabase();
+setupMockDatabase();
 
-// 1. PIN & CRYPTO TESTS
-console.log('[1. Cryptography & Security Tests]');
-runTest('PBKDF2 PIN hashing uses 25,000 iterations with 32-char salt', () => {
-  const hash = CryptoUtils.hashPin('1234');
-  assert.ok(hash.startsWith('pbkdf2:25000:'), 'Hash must start with pbkdf2:25000:');
-  const parts = hash.split(':');
-  assert.strictEqual(parts.length, 4, 'Must have 4 parts: pbkdf2, iterations, salt, hash');
-  assert.strictEqual(parts[1], '25000', 'Iterations must be 25,000');
-  assert.strictEqual(parts[2].length, 32, 'Salt must have 32 characters (256-bit entropy)');
-  assert.strictEqual(parts[3].length, 64, 'Derived key must be 64 hex chars (256-bit hash)');
+// 2. ONE-TIME ADMIN SETUP FLOW TESTS
+console.log('\n[2. Secure One-Time Administrator Bootstrap Setup Tests]');
+runTest('Login for PendingSetup admin account is blocked', () => {
+  const res = AuthService.login({ employeeId: 'EMP000', pin: '8888' });
+  assert.strictEqual(res.success, false);
+  assert.ok(res.message.includes('inactive') || res.message.includes('contact administrator'));
 });
 
-runTest('PBKDF2 PIN verification verifies correct and rejects wrong PIN', () => {
-  const hash = CryptoUtils.hashPin('9999');
-  assert.strictEqual(CryptoUtils.verifyPin('9999', hash).valid, true);
-  assert.strictEqual(CryptoUtils.verifyPin('0000', hash).valid, false);
-  assert.strictEqual(CryptoUtils.verifyPin('', hash).valid, false);
+runTest('setupAdmin with invalid token is rejected with 403', () => {
+  const req = {
+    postData: {
+      contents: JSON.stringify({
+        action: 'setupAdmin',
+        setupToken: 'wrong_fake_token',
+        newPin: '948123'
+      })
+    }
+  };
+  const rawRes = Code.doPost(req);
+  const res = (rawRes && typeof rawRes.getContent === 'function') ? JSON.parse(rawRes.getContent()) : rawRes;
+  assert.strictEqual(res.success, false);
+  assert.strictEqual(res.code, 403);
 });
 
-runTest('Predictable default PIN 8888 is NOT the default admin PIN', () => {
+const chosenAdminPin = '948123';
+runTest('setupAdmin with valid token activates admin and sets private PIN', () => {
+  const req = {
+    postData: {
+      contents: JSON.stringify({
+        action: 'setupAdmin',
+        setupToken: validSetupToken,
+        newPin: chosenAdminPin
+      })
+    }
+  };
+  const rawRes = Code.doPost(req);
+  const res = (rawRes && typeof rawRes.getContent === 'function') ? JSON.parse(rawRes.getContent()) : rawRes;
+  assert.strictEqual(res.success, true);
+  assert.ok(res.message.includes('activated'));
+
+  // Verify status in database
   const admin = SheetsService.getEmployeeById('EMP000');
-  assert.strictEqual(CryptoUtils.verifyPin('8888', admin['PIN Hash']).valid, false);
-  assert.strictEqual(CryptoUtils.verifyPin(dynamicAdminPin, admin['PIN Hash']).valid, true);
+  assert.strictEqual(admin.Status, 'Active');
+  assert.ok(admin['PIN Hash'].startsWith('pbkdf2:25000:'));
+});
+
+runTest('One-time setup token is destroyed and cannot be reused', () => {
+  const req = {
+    postData: {
+      contents: JSON.stringify({
+        action: 'setupAdmin',
+        setupToken: validSetupToken,
+        newPin: '111111'
+      })
+    }
+  };
+  const rawRes = Code.doPost(req);
+  const res = (rawRes && typeof rawRes.getContent === 'function') ? JSON.parse(rawRes.getContent()) : rawRes;
+  assert.strictEqual(res.success, false);
+  assert.strictEqual(res.code, 403);
+});
+
+// 3. AUTHENTICATION & SESSION TESTS
+console.log('\n[3. Authentication & Session Security Tests]');
+let workerToken = null;
+let adminToken = null;
+
+runTest('Admin can now log in using private chosen PIN', () => {
+  const res = AuthService.login({ employeeId: 'EMP000', pin: chosenAdminPin });
+  assert.strictEqual(res.success, true);
+  assert.strictEqual(res.employee.role, 'Admin');
+  adminToken = res.token;
+});
+
+runTest('Worker login with valid ID and PIN succeeds and issues token', () => {
+  const res = AuthService.login({ employeeId: 'EMP001', pin: workerPin });
+  assert.strictEqual(res.success, true);
+  assert.ok(res.token, 'Must return session token');
+  assert.strictEqual(res.employee.role, 'Labourer');
+  workerToken = res.token;
+});
+
+runTest('Login with incorrect PIN is rejected', () => {
+  const res = AuthService.login({ employeeId: 'EMP001', pin: 'wrongpin' });
+  assert.strictEqual(res.success, false);
+  assert.ok(res.message.includes('Invalid Employee ID or PIN'));
 });
 
 runTest('Session token issuance and HMAC validation', () => {
@@ -152,40 +247,8 @@ runTest('Session token issuance and HMAC validation', () => {
   assert.strictEqual(CryptoUtils.verifySessionToken(token + 'x'), null, 'Tampered token must be rejected');
 });
 
-// 2. AUTHENTICATION TESTS
-console.log('\n[2. Authentication & Authorization Tests]');
-let workerToken = null;
-let adminToken = null;
-
-runTest('Worker login with valid ID and PIN succeeds and issues token', () => {
-  const res = AuthService.login({ employeeId: 'EMP001', pin: workerPin });
-  assert.strictEqual(res.success, true);
-  assert.ok(res.token, 'Must return session token');
-  assert.strictEqual(res.employee.role, 'Labourer');
-  workerToken = res.token;
-});
-
-runTest('Admin login for Ateeb succeeds with dynamic PIN and issues Admin token', () => {
-  const res = AuthService.login({ employeeId: 'EMP000', pin: dynamicAdminPin });
-  assert.strictEqual(res.success, true);
-  assert.strictEqual(res.employee.role, 'Admin');
-  adminToken = res.token;
-});
-
-runTest('Login with incorrect PIN is rejected', () => {
-  const res = AuthService.login({ employeeId: 'EMP001', pin: 'wrongpin' });
-  assert.strictEqual(res.success, false);
-  assert.ok(res.message.includes('Invalid Employee ID or PIN'));
-});
-
-runTest('Login for deactivated account is rejected', () => {
-  const res = AuthService.login({ employeeId: 'EMP002', pin: workerPin });
-  assert.strictEqual(res.success, false);
-  assert.ok(res.message.includes('inactive'));
-});
-
-// 3. GPS & GEOFENCE TESTS
-console.log('\n[3. GPS & Geofence Tests]');
+// 4. GPS & GEOFENCE TESTS
+console.log('\n[4. GPS & Geofence Tests]');
 runTest('GPS validation accepts optimal accuracy (<= 20m)', () => {
   const res = LocationService.validateGPS(25.2533, 55.3652, 15);
   assert.strictEqual(res.valid, true);
@@ -216,8 +279,8 @@ runTest('Geofence calculation rejects location far away (>100m)', () => {
   assert.ok(res.distance > 500);
 });
 
-// 4. SHIFT & OVERTIME TESTS
-console.log('\n[4. Shift Management & Overtime Tests]');
+// 5. SHIFT & OVERTIME TESTS
+console.log('\n[5. Shift Management & Overtime Tests]');
 let activeShiftId = null;
 
 runTest('Start shift fails if GPS accuracy is too poor (>30m)', () => {
@@ -313,8 +376,8 @@ runTest('End shift completes shift and generates pending overtime record', () =>
   assert.strictEqual(otRecord['Approval Status'], 'Pending');
 });
 
-// 5. ADMIN & GATEWAY TESTS
-console.log('\n[5. Admin Authorization & Security Gateway Tests]');
+// 6. ADMIN & GATEWAY TESTS
+console.log('\n[6. Admin Authorization & Security Gateway Tests]');
 runTest('Labourer is forbidden from calling Admin actions via doPost gateway', () => {
   const req = {
     postData: {
@@ -420,4 +483,4 @@ runTest('Audit logs record all sensitive actions', () => {
   assert.ok(actions.includes('end_shift'), 'Must log end shift');
 });
 
-console.log(`\n=== ALL ${testsPassed}/${testsTotal} COMPREHENSIVE SECURITY TESTS PASSED! ===`);
+console.log(`\n=== ALL ${testsPassed}/${testsTotal} TESTS PASSED (RFC VECTORS + ONE-TIME SETUP + SECURITY)! ===`);

@@ -184,49 +184,39 @@ var SheetsService = (function() {
   };
 
   /**
-   * Seed Ateeb as default Admin with a secure unguessable random one-time PIN
+   * Seed Ateeb as default Admin in PendingSetup state with a one-time setup token
    */
   SheetsServiceClass.prototype.seedDefaultAdmin = function(sheet) {
     if (!sheet || sheet.getLastRow() > 1) return null;
 
-    // Generate a secure 6-digit temporary PIN
-    var randomNum = Math.floor(100000 + Math.random() * 900000);
-    var tempPin = String(randomNum);
+    // Generate cryptographically random 64-character one-time setup token
+    var setupToken = _CryptoUtils 
+      ? (_CryptoUtils.generateSalt(32) + _CryptoUtils.generateSalt(32))
+      : 'setup_token_placeholder';
 
-    // Save initial PIN in script properties for secure reference by owner
+    // Store one-time setup token in server Script Properties
     if (typeof PropertiesService !== 'undefined' && PropertiesService.getScriptProperties) {
-      PropertiesService.getScriptProperties().setProperty('INITIAL_ADMIN_PIN', tempPin);
+      PropertiesService.getScriptProperties().setProperty('ONE_TIME_SETUP_TOKEN', setupToken);
     }
-
-    var adminPinHash = _CryptoUtils 
-      ? _CryptoUtils.hashPin(tempPin) 
-      : 'pbkdf2:25000:initialadminseed:default';
 
     var adminRow = [
       'EMP000',
       'Ateeb',
       '+971500000000',
       _CONFIG.ADMIN_ROLE || 'Admin',
-      '', // No hardcoded site
-      adminPinHash,
-      'Active',
+      '',
+      'SETUP_PENDING',
+      'PendingSetup',
       new Date().toISOString(),
       ''
     ];
     sheet.getRange(2, 1, 1, adminRow.length).setValues([adminRow]);
 
-    if (typeof Logger !== 'undefined') {
-      Logger.log('================================================================');
-      Logger.log('[SECURITY ALERT] Initial Admin account created for Ateeb (EMP000)');
-      Logger.log('[SECURITY ALERT] Temporary One-Time PIN: ' + tempPin);
-      Logger.log('Please log in with this PIN and change it immediately.');
-      Logger.log('================================================================');
-    }
-
     return {
       created: true,
       employeeId: 'EMP000',
-      message: 'Initial Admin account created. Check Apps Script Execution Log for temporary PIN.'
+      setupToken: setupToken,
+      message: 'Initial Admin record created in PendingSetup state. One-time setup token generated.'
     };
   };
 

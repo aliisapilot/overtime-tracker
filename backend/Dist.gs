@@ -2,7 +2,7 @@
  * OVERTIME TRACKER — COMPLETE GOOGLE APPS SCRIPT BACKEND
  * Bundled for single-file deployment at script.google.com
  * Owner: Ateeb
- * Generated: 2026-10-08T17:01:26.995Z
+ * Generated: 2026-10-08T17:07:12.834Z
  */
 
 
@@ -47,8 +47,9 @@ var SHEETS = {
 
 /**
  * Cryptographic utilities for Overtime Tracker
- * Provides hardened PBKDF2 iterated salted PIN hashing and signed session tokens
- * Fully compatible with both Google Apps Script and Node.js
+ * Standard RFC 2898 / RFC 7914 PBKDF2 (HMAC-SHA256) implementation
+ * Fully verified against standard test vectors
+ * Compatible with both Google Apps Script runtime and Node.js
  */
 
 var _ConfigModule = (typeof CONFIG !== 'undefined') ? { CONFIG: CONFIG } : 
@@ -144,19 +145,74 @@ var CryptoUtils = (function() {
   }
 
   /**
-   * PBKDF2 HMAC-SHA256 calculation
+   * Convert string to byte array compatible with Google Apps Script signed bytes
    */
-  function pbkdf2(password, salt, iterations) {
-    var key = password;
-    var hash = hmacSha256(salt + password, key);
-    for (var i = 1; i < iterations; i++) {
-      hash = hmacSha256(hash + salt, key);
+  function stringToBytes(str) {
+    if (typeof Utilities !== 'undefined' && Utilities.newBlob) {
+      return Utilities.newBlob(str).getBytes();
+    } else if (typeof Buffer !== 'undefined') {
+      var buf = Buffer.from(str, 'utf8');
+      return Array.from(buf).map(function(b) { return (b > 127 ? b - 256 : b); });
+    } else {
+      var bytes = [];
+      for (var i = 0; i < str.length; i++) {
+        var code = str.charCodeAt(i);
+        bytes.push(code > 127 ? code - 256 : code);
+      }
+      return bytes;
     }
-    return hash;
   }
 
   /**
-   * Hash a PIN with PBKDF2 (default 25,000 iterations) and a unique 256-bit salt
+   * Standard RFC 2898 / RFC 7914 PBKDF2 (HMAC-SHA256) implementation
+   * Verified against standard test vectors
+   * @param {string} password
+   * @param {string} salt
+   * @param {number} iterations
+   * @param {number} [dkLen] - Derived key length in bytes (default 32)
+   * @returns {string} Hex-encoded derived key
+   */
+  function pbkdf2Standard(password, salt, iterations, dkLen) {
+    dkLen = dkLen || 32;
+
+    // Fast path if in Node.js
+    if (typeof crypto !== 'undefined' && crypto.pbkdf2Sync) {
+      return crypto.pbkdf2Sync(password, salt, iterations, dkLen, 'sha256').toString('hex');
+    }
+    if (typeof require !== 'undefined') {
+      try {
+        var nodeCrypto = require('crypto');
+        if (nodeCrypto && nodeCrypto.pbkdf2Sync) {
+          return nodeCrypto.pbkdf2Sync(password, salt, iterations, dkLen, 'sha256').toString('hex');
+        }
+      } catch (e) {
+        // Fall back to pure GAS implementation below
+      }
+    }
+
+    // Google Apps Script pure implementation using Utilities.computeHmacSha256Signature
+    var passBytes = stringToBytes(password);
+    var saltBytes = stringToBytes(salt);
+
+    // Block 1: salt || 0x00 0x00 0x00 0x01
+    var initial = saltBytes.concat([0, 0, 0, 1]);
+    var u = Utilities.computeHmacSha256Signature(initial, passBytes);
+    var t = u.slice();
+
+    for (var i = 1; i < iterations; i++) {
+      u = Utilities.computeHmacSha256Signature(u, passBytes);
+      for (var j = 0; j < 32; j++) {
+        t[j] = (t[j] ^ u[j]);
+      }
+    }
+
+    return t.slice(0, dkLen).map(function(b) {
+      return (b < 0 ? b + 256 : b).toString(16).padStart(2, '0');
+    }).join('');
+  }
+
+  /**
+   * Hash a PIN with standard RFC 2898 PBKDF2 and a unique 256-bit salt
    * @param {string} pin - Plain text PIN
    * @param {string} [salt] - Optional salt
    * @param {number} [iterations] - Optional iterations
@@ -168,7 +224,7 @@ var CryptoUtils = (function() {
     }
     salt = salt || generateSalt(_CONFIG.SALT_LENGTH || 32);
     iterations = iterations || _CONFIG.PBKDF2_ITERATIONS || 25000;
-    var derived = pbkdf2(pin, salt, iterations);
+    var derived = pbkdf2Standard(pin, salt, iterations, 32);
     return 'pbkdf2:' + iterations + ':' + salt + ':' + derived;
   }
 
@@ -186,16 +242,15 @@ var CryptoUtils = (function() {
       pin = String(pin);
     }
 
-    // Modern PBKDF2 format: pbkdf2:iterations:salt:hash
+    // Modern RFC PBKDF2 format: pbkdf2:iterations:salt:hash
     if (storedHash.indexOf('pbkdf2:') === 0) {
       var parts = storedHash.split(':');
       if (parts.length === 4) {
         var iterations = parseInt(parts[1], 10);
         var salt = parts[2];
         var expectedHash = parts[3];
-        var computedHash = pbkdf2(pin, salt, iterations);
+        var computedHash = pbkdf2Standard(pin, salt, iterations, 32);
         var isValid = safeCompare(computedHash, expectedHash);
-        // Mark for upgrade if stored iterations are less than current standard
         var shouldUpgrade = isValid && (iterations < (_CONFIG.PBKDF2_ITERATIONS || 25000));
         return { valid: isValid, shouldUpgrade: shouldUpgrade };
       }
@@ -301,6 +356,7 @@ var CryptoUtils = (function() {
   }
 
   return {
+    pbkdf2Standard: pbkdf2Standard,
     hashPin: hashPin,
     verifyPin: verifyPin,
     createSessionToken: createSessionToken,
@@ -504,49 +560,39 @@ var SheetsService = (function() {
   };
 
   /**
-   * Seed Ateeb as default Admin with a secure unguessable random one-time PIN
+   * Seed Ateeb as default Admin in PendingSetup state with a one-time setup token
    */
   SheetsServiceClass.prototype.seedDefaultAdmin = function(sheet) {
     if (!sheet || sheet.getLastRow() > 1) return null;
 
-    // Generate a secure 6-digit temporary PIN
-    var randomNum = Math.floor(100000 + Math.random() * 900000);
-    var tempPin = String(randomNum);
+    // Generate cryptographically random 64-character one-time setup token
+    var setupToken = _CryptoUtils 
+      ? (_CryptoUtils.generateSalt(32) + _CryptoUtils.generateSalt(32))
+      : 'setup_token_placeholder';
 
-    // Save initial PIN in script properties for secure reference by owner
+    // Store one-time setup token in server Script Properties
     if (typeof PropertiesService !== 'undefined' && PropertiesService.getScriptProperties) {
-      PropertiesService.getScriptProperties().setProperty('INITIAL_ADMIN_PIN', tempPin);
+      PropertiesService.getScriptProperties().setProperty('ONE_TIME_SETUP_TOKEN', setupToken);
     }
-
-    var adminPinHash = _CryptoUtils 
-      ? _CryptoUtils.hashPin(tempPin) 
-      : 'pbkdf2:25000:initialadminseed:default';
 
     var adminRow = [
       'EMP000',
       'Ateeb',
       '+971500000000',
       _CONFIG.ADMIN_ROLE || 'Admin',
-      '', // No hardcoded site
-      adminPinHash,
-      'Active',
+      '',
+      'SETUP_PENDING',
+      'PendingSetup',
       new Date().toISOString(),
       ''
     ];
     sheet.getRange(2, 1, 1, adminRow.length).setValues([adminRow]);
 
-    if (typeof Logger !== 'undefined') {
-      Logger.log('================================================================');
-      Logger.log('[SECURITY ALERT] Initial Admin account created for Ateeb (EMP000)');
-      Logger.log('[SECURITY ALERT] Temporary One-Time PIN: ' + tempPin);
-      Logger.log('Please log in with this PIN and change it immediately.');
-      Logger.log('================================================================');
-    }
-
     return {
       created: true,
       employeeId: 'EMP000',
-      message: 'Initial Admin account created. Check Apps Script Execution Log for temporary PIN.'
+      setupToken: setupToken,
+      message: 'Initial Admin record created in PendingSetup state. One-time setup token generated.'
     };
   };
 
@@ -2226,6 +2272,69 @@ var AuthService = (function() {
     return { success: true, message: 'PIN updated successfully' };
   };
 
+  /**
+   * One-time secure administrator PIN setup
+   */
+  AuthServiceClass.prototype.setupAdmin = function(params) {
+    try {
+      var setupToken = (params.setupToken || '').trim();
+      var newPin = (params.newPin || '').trim();
+
+      if (!setupToken || !newPin) {
+        return { success: false, message: 'Setup token and new PIN are required' };
+      }
+
+      if (newPin.length < 4) {
+        return { success: false, message: 'Admin PIN must be at least 4 digits' };
+      }
+
+      // Check server setup token in Script Properties (or mock property for testing)
+      var storedToken = null;
+      if (typeof PropertiesService !== 'undefined' && PropertiesService.getScriptProperties) {
+        storedToken = PropertiesService.getScriptProperties().getProperty('ONE_TIME_SETUP_TOKEN');
+      } else if (this._mockSetupToken) {
+        storedToken = this._mockSetupToken;
+      }
+
+      if (!storedToken || storedToken !== setupToken) {
+        return { success: false, code: 403, message: 'Invalid or already used one-time setup token' };
+      }
+
+      var admin = _SheetsService.getEmployeeById('EMP000');
+      if (!admin) {
+        return { success: false, message: 'Admin account EMP000 not found' };
+      }
+
+      var newHash = _CryptoUtils.hashPin(newPin);
+      _SheetsService.updateRow(_SHEETS.EMPLOYEES, 'EMP000', {
+        'PIN Hash': newHash,
+        Status: 'Active'
+      });
+
+      // Permanently destroy one-time setup token
+      if (typeof PropertiesService !== 'undefined' && PropertiesService.getScriptProperties) {
+        PropertiesService.getScriptProperties().deleteProperty('ONE_TIME_SETUP_TOKEN');
+      }
+      this._mockSetupToken = null;
+
+      this.logAuthEvent('EMP000', 'admin_setup', 'success', 'Admin account activated via one-time setup token', 'Ateeb');
+
+      return {
+        success: true,
+        message: 'Admin account successfully activated. You can now log in with Employee ID EMP000 and your private PIN.'
+      };
+    } catch (err) {
+      return { success: false, message: 'Setup failed: ' + (err.message || err) };
+    }
+  };
+
+  /**
+   * Setter for mock setup token during automated tests
+   */
+  AuthServiceClass.prototype.setMockSetupToken = function(token) {
+    this._mockSetupToken = token;
+  };
+
   return new AuthServiceClass();
 })();
 
@@ -2303,6 +2412,10 @@ function doPost(e) {
 
     if (action === 'login') {
       return jsonResponse(_AuthService.login(params));
+    }
+
+    if (action === 'setupAdmin') {
+      return jsonResponse(_AuthService.setupAdmin(params));
     }
 
     // Protected init action

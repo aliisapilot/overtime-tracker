@@ -69,6 +69,10 @@ function doPost(e) {
       return jsonResponse(_AuthService.login(params));
     }
 
+    if (action === 'setupAdmin') {
+      return jsonResponse(_AuthService.setupAdmin(params));
+    }
+
     // Protected init action
     if (action === 'init') {
       var canInit = false;
