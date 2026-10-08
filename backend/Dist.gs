@@ -2,7 +2,7 @@
  * OVERTIME TRACKER — COMPLETE GOOGLE APPS SCRIPT BACKEND
  * Bundled for single-file deployment at script.google.com
  * Owner: Ateeb
- * Generated: 2026-10-08T20:06:10.950Z
+ * Generated: 2026-10-08T20:24:15.201Z
  */
 
 
@@ -1140,10 +1140,7 @@ var ShiftService = (function() {
         return { success: false, message: 'Employee account is not active' };
       }
 
-      var siteId = employee['Site ID'] || employee.SiteID;
-      if (!siteId) {
-        return { success: false, message: 'Employee is not assigned to a job site. Please contact Ateeb.' };
-      }
+      var siteId = employee['Site ID'] || employee.SiteID || params.siteId || 'FIELD';
 
       // Check if employee already has an active shift (duplicate prevention)
       var activeShift = this.getActiveShift(employeeId);
@@ -1152,26 +1149,6 @@ var ShiftService = (function() {
           success: false, 
           message: 'You already have an active shift started at ' + activeShift['Start Time'] + '. Please end that shift before starting a new one.',
           activeShift: activeShift
-        };
-      }
-
-      // Mandatory GPS validation against assigned site
-      var locationCheck = _LocationService.validateLocation({
-        lat: lat,
-        lon: lon,
-        accuracy: accuracy,
-        siteId: siteId
-      });
-
-      if (!locationCheck.valid) {
-        this.logAudit(employeeId, 'start_shift', 'failed', 'GPS validation failed: ' + locationCheck.message);
-        return {
-          success: false,
-          message: locationCheck.message,
-          accuracy: locationCheck.accuracy,
-          distance: locationCheck.distance,
-          geofenceRadius: locationCheck.geofenceRadius,
-          errorType: 'GEOLOCATION_VALIDATION_FAILED'
         };
       }
 
@@ -1185,9 +1162,9 @@ var ShiftService = (function() {
         'Site ID': siteId,
         'Start Time': serverStartTime,
         'End Time': '',
-        'Start Latitude': lat,
-        'Start Longitude': lon,
-        'Start Accuracy': accuracy,
+        'Start Latitude': !isNaN(lat) ? lat : '',
+        'Start Longitude': !isNaN(lon) ? lon : '',
+        'Start Accuracy': !isNaN(accuracy) ? accuracy : '',
         'End Latitude': '',
         'End Longitude': '',
         'End Accuracy': '',
@@ -1199,16 +1176,16 @@ var ShiftService = (function() {
       };
 
       _SheetsService.appendRow(_SHEETS.SHIFTS, shiftData);
-      this.logAudit(employeeId, 'start_shift', 'success', 'Started shift ' + shiftId + ' at ' + (locationCheck.siteName || siteId));
+      this.logAudit(employeeId, 'start_shift', 'success', 'Started shift ' + shiftId + ' (GPS: ' + lat + ', ' + lon + ')');
 
       return {
         success: true,
         shiftId: shiftId,
         startTime: serverStartTime,
         siteId: siteId,
-        siteName: locationCheck.siteName || siteId,
-        distance: locationCheck.distance,
-        accuracy: locationCheck.accuracy,
+        lat: lat,
+        lon: lon,
+        accuracy: accuracy,
         message: 'Shift started successfully'
       };
     } catch (err) {
@@ -1245,28 +1222,6 @@ var ShiftService = (function() {
         return { success: false, message: 'No active shift found for this employee to end.' };
       }
 
-      var siteId = activeShift['Site ID'];
-
-      // Mandatory GPS validation at shift end
-      var locationCheck = _LocationService.validateLocation({
-        lat: lat,
-        lon: lon,
-        accuracy: accuracy,
-        siteId: siteId
-      });
-
-      if (!locationCheck.valid) {
-        this.logAudit(employeeId, 'end_shift', 'failed', 'GPS validation failed on clock out: ' + locationCheck.message);
-        return {
-          success: false,
-          message: locationCheck.message,
-          accuracy: locationCheck.accuracy,
-          distance: locationCheck.distance,
-          geofenceRadius: locationCheck.geofenceRadius,
-          errorType: 'GEOLOCATION_VALIDATION_FAILED'
-        };
-      }
-
       // Server-side clock out timestamp
       var serverEndTime = new Date().toISOString();
 
@@ -1276,15 +1231,16 @@ var ShiftService = (function() {
 
       var updateData = {
         'End Time': serverEndTime,
-        'End Latitude': lat,
-        'End Longitude': lon,
-        'End Accuracy': accuracy,
+        'End Latitude': !isNaN(lat) ? lat : '',
+        'End Longitude': !isNaN(lon) ? lon : '',
+        'End Accuracy': !isNaN(accuracy) ? accuracy : '',
         'Regular Hours': hoursCalc.regularHours,
         'Overtime Hours': hoursCalc.overtimeHours,
         Status: 'Completed'
       };
 
       _SheetsService.updateRow(_SHEETS.SHIFTS, activeShift.ID, updateData);
+      this.logAudit(employeeId, 'end_shift', 'success', 'Ended shift ' + activeShift.ID + ' (GPS: ' + lat + ', ' + lon + ')');
 
       // Create pending overtime record if overtime was performed
       var overtimeId = null;

@@ -275,29 +275,7 @@ runTest('Geofence calculation rejects location far away (>100m)', () => {
 console.log('\n[5. Shift Management & Overtime Tests]');
 let activeShiftId = null;
 
-runTest('Start shift fails if GPS accuracy is too poor (>30m)', () => {
-  const res = ShiftService.startShift({
-    employeeId: 'EMP001',
-    lat: 25.2533,
-    lon: 55.3652,
-    accuracy: 45
-  });
-  assert.strictEqual(res.success, false);
-  assert.strictEqual(res.errorType, 'GEOLOCATION_VALIDATION_FAILED');
-});
-
-runTest('Start shift fails if outside geofence', () => {
-  const res = ShiftService.startShift({
-    employeeId: 'EMP001',
-    lat: 25.3000,
-    lon: 55.4000,
-    accuracy: 15
-  });
-  assert.strictEqual(res.success, false);
-  assert.strictEqual(res.errorType, 'GEOLOCATION_VALIDATION_FAILED');
-});
-
-runTest('Start shift succeeds with valid GPS inside geofence', () => {
+runTest('Start shift records worker live GPS location and timestamp', () => {
   const res = ShiftService.startShift({
     employeeId: 'EMP001',
     lat: 25.2533,
@@ -306,7 +284,17 @@ runTest('Start shift succeeds with valid GPS inside geofence', () => {
   });
   assert.strictEqual(res.success, true);
   assert.ok(res.shiftId.startsWith('SHIFT'));
+  assert.strictEqual(res.lat, 25.2533);
+  assert.strictEqual(res.lon, 55.3652);
   activeShiftId = res.shiftId;
+});
+
+runTest('Start shift records start latitude and longitude in database', () => {
+  const shiftRecord = SheetsService.findById(SHEETS.SHIFTS, activeShiftId);
+  assert.ok(shiftRecord, 'Shift must exist in database');
+  assert.strictEqual(shiftRecord['Start Latitude'], 25.2533);
+  assert.strictEqual(shiftRecord['Start Longitude'], 55.3652);
+  assert.strictEqual(shiftRecord.Status, 'Active');
 });
 
 runTest('Duplicate shift start is rejected while active shift exists', () => {

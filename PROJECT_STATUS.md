@@ -1,7 +1,7 @@
 # Project Status
 
-**Last Updated**: 2026-10-08
-**Version**: 1.3.0 (Live Backend Connected, Authentication & Shift Management Implemented)
+**Last Updated**: 2026-10-09
+**Version**: 1.4.0 (Direct GPS Clock-In & Clock-Out Location Tracking, Frictionless Mobile Operations)
 
 ---
 
@@ -13,16 +13,17 @@
 - [x] **Live Backend Transport**: Implemented `src/lib/api.ts` with CORS-safe `text/plain;charset=utf-8` transport, automatic 302 redirect handling, session persistence, and full error diagnostics.
 - [x] **Employee Authentication**: Built mobile-responsive Employee ID + PIN login interface with on-screen tactile keypad, password masking toggle, and live backend connection badge.
 - [x] **Role-Based Routing**: Dynamic dashboard switching routing Ateeb to the Administrator Portal and labourers to their Shift Dashboard.
-- [x] **Labourer Shift Operations**:
-  - High-accuracy GPS polling via `navigator.geolocation` with fallback retry.
-  - Accuracy threshold verification: Optimal (≤ 20m), Acceptable (21–30m), Degraded (> 30m, blocked with user guidance).
-  - Haversine geofence calculation against assigned job site.
-  - START SHIFT button enforcing GPS accuracy and geofence compliance.
-  - END SHIFT button with break duration selection (30, 45, 60 minutes) and automated overtime submission.
-  - Live attendance history loaded directly from Google Sheets.
+- [x] **Direct GPS Clock-In & Clock-Out (Labourer Dashboard)**:
+  - Workers can clock in immediately from anywhere by tapping **START SHIFT** — no pre-configured job site or restrictive geofence blocking.
+  - Automatically captures high-accuracy GPS coordinates (`latitude`, `longitude`, `accuracy`) at the exact moment the shift starts.
+  - Interactive live map pin on OpenStreetMap via Leaflet displays the worker's current verified position and accuracy radius.
+  - Workers tap **END SHIFT** from anywhere to record their completion GPS coordinates, select break duration (30, 45, 60 minutes), and automatically calculate overtime.
+  - Recent shifts table displays Clock-In and Clock-Out locations with direct clickable Google Maps links (`https://www.google.com/maps?q=lat,lon`).
 - [x] **Ateeb Administrator Dashboard**:
-  - Live statistics: Total Employees, Active Job Sites, Pending Overtime, Today's Attendance.
-  - Tabbed management: Overtime Authorization (with one-click approval), Attendance Ledger, Daily Reports (aggregated shift totals, regular and overtime hours by site and employee, CSV export), Registered Workforce, Job Sites, and Audit Trail.
+  - Live statistics: Total Employees, Clocked-In Now (real-time active workforce), Pending Overtime, Today's Attendance.
+  - Direct GPS Attendance Ledger: displays exact Start Time, End Time, and 📍 clickable Google Maps links for both clock-in and clock-out coordinates for every worker shift.
+  - Enhanced Attendance CSV Export: exports shift timestamps, regular/overtime hours, raw latitude/longitude, and full Google Maps location URLs.
+  - Tabbed management: Overtime Authorization (with one-click approval), Attendance Ledger, Daily Reports (aggregated shift totals, regular and overtime hours, CSV export), Registered Workforce, and Audit Trail.
   - Sync Data button for instant Google Sheets refresh.
 - [x] **Daily Reports & CSV Export (Admin Portal)**: Real-time query by date with KPI summary cards, site-by-site breakdown, employee breakdown, and formatted CSV export.
 - [x] **Leaflet + OpenStreetMap Visual Geofencing**: Added interactive OpenStreetMap visualization on Labourer Dashboard displaying assigned site marker, circular geofence boundary, live GPS location marker, and accuracy radius.

@@ -5,8 +5,6 @@ import {
   EmployeeProfile,
   getEmployees,
   createEmployee,
-  getJobSites,
-  createJobSite,
   getAttendance,
   getPendingOvertime,
   approveOvertime,
@@ -14,7 +12,6 @@ import {
   generateDailyReport,
 } from '@/lib/api';
 import ChangePinModal from '@/components/ChangePinModal';
-import JobSiteModal from '@/components/JobSiteModal';
 
 interface DailyReportData {
   date: string;
@@ -45,13 +42,29 @@ interface OvertimeItem {
 
 interface AttendanceItem {
   ID: string;
+  shiftId?: string;
   'Employee ID': string;
-  'Site ID': string;
+  employeeId?: string;
+  'Site ID'?: string;
+  siteId?: string;
   'Start Time': string;
+  startTime?: string;
   'End Time'?: string;
+  endTime?: string;
+  'Start Latitude'?: number;
+  'Start Longitude'?: number;
+  startLat?: number;
+  startLon?: number;
+  'End Latitude'?: number;
+  'End Longitude'?: number;
+  endLat?: number;
+  endLon?: number;
   'Regular Hours'?: number;
+  regularHours?: number;
   'Overtime Hours'?: number;
+  overtimeHours?: number;
   Status: string;
+  status?: string;
 }
 
 interface AuditLogItem {
@@ -65,7 +78,7 @@ interface AuditLogItem {
 }
 
 export default function AdminDashboard({ session, onLogout }: AdminDashboardProps) {
-  const [activeTab, setActiveTab] = useState<'overtime' | 'attendance' | 'reports' | 'employees' | 'sites' | 'audit'>('overtime');
+  const [activeTab, setActiveTab] = useState<'overtime' | 'attendance' | 'reports' | 'employees' | 'audit'>('overtime');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -77,22 +90,18 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
 
   // Data states
   const [employees, setEmployees] = useState<EmployeeProfile[]>([]);
-  const [sites, setSites] = useState<JobSite[]>([]);
   const [overtimeList, setOvertimeList] = useState<OvertimeItem[]>([]);
   const [attendanceList, setAttendanceList] = useState<AttendanceItem[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>([]);
 
   // Modals state
   const [showAddEmpModal, setShowAddEmpModal] = useState(false);
-  const [showAddSiteModal, setShowAddSiteModal] = useState(false);
-  const [siteToEdit, setSiteToEdit] = useState<JobSite | null>(null);
   const [submittingModal, setSubmittingModal] = useState(false);
   const [showPinModal, setShowPinModal] = useState(false);
 
   // New Employee Form
   const [newEmpName, setNewEmpName] = useState('');
   const [newEmpPhone, setNewEmpPhone] = useState('');
-  const [newEmpSiteId, setNewEmpSiteId] = useState('');
   const [newEmpPin, setNewEmpPin] = useState('');
 
   const handleCreateEmployee = async (e: React.FormEvent) => {
@@ -107,7 +116,6 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
         name: newEmpName.trim(),
         phone: newEmpPhone.trim(),
         role: 'Labourer',
-        siteId: newEmpSiteId,
         pin: newEmpPin.trim(),
       });
       if (res.success) {
@@ -129,17 +137,45 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
 
   const handleExportCsv = () => {
     if (attendanceList.length === 0) return;
-    const headers = ['Shift ID', 'Employee ID', 'Site ID', 'Start Time', 'End Time', 'Regular Hours', 'Overtime Hours', 'Status'];
-    const rows = attendanceList.map((att) => [
-      att.ID,
-      att['Employee ID'],
-      att['Site ID'],
-      att['Start Time'],
-      att['End Time'] || '',
-      att['Regular Hours'] || 0,
-      att['Overtime Hours'] || 0,
-      att.Status,
-    ]);
+    const headers = [
+      'Shift ID',
+      'Employee ID',
+      'Clock In Time',
+      'Clock In Lat',
+      'Clock In Lon',
+      'Clock In Google Maps URL',
+      'Clock Out Time',
+      'Clock Out Lat',
+      'Clock Out Lon',
+      'Clock Out Google Maps URL',
+      'Regular Hours',
+      'Overtime Hours',
+      'Status'
+    ];
+    const rows = attendanceList.map((att) => {
+      const sLat = att.startLat ?? att['Start Latitude'] ?? '';
+      const sLon = att.startLon ?? att['Start Longitude'] ?? '';
+      const eLat = att.endLat ?? att['End Latitude'] ?? '';
+      const eLon = att.endLon ?? att['End Longitude'] ?? '';
+      const sUrl = sLat !== '' && sLon !== '' ? `https://www.google.com/maps?q=${sLat},${sLon}` : '';
+      const eUrl = eLat !== '' && eLon !== '' ? `https://www.google.com/maps?q=${eLat},${eLon}` : '';
+
+      return [
+        att.ID || att.shiftId,
+        att['Employee ID'] || att.employeeId,
+        att['Start Time'] || att.startTime,
+        sLat,
+        sLon,
+        sUrl ? `"${sUrl}"` : '',
+        att['End Time'] || att.endTime || '',
+        eLat,
+        eLon,
+        eUrl ? `"${eUrl}"` : '',
+        att['Regular Hours'] || att.regularHours || 0,
+        att['Overtime Hours'] || att.overtimeHours || 0,
+        att.Status || att.status,
+      ];
+    });
 
     const csvContent =
       'data:text/csv;charset=utf-8,' +
@@ -147,7 +183,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement('a');
     link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `attendance_report_${new Date().toISOString().split('T')[0]}.csv`);
+    link.setAttribute('download', `attendance_with_gps_${new Date().toISOString().split('T')[0]}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -215,9 +251,8 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
 
   const loadAllData = useCallback(async () => {
     try {
-      const [empRes, sitesRes, otRes, attRes, auditRes] = await Promise.all([
+      const [empRes, otRes, attRes, auditRes] = await Promise.all([
         getEmployees(session.token),
-        getJobSites(session.token),
         getPendingOvertime(session.token),
         getAttendance(session.token),
         getAuditLogs(session.token, 20),
@@ -225,9 +260,6 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
 
       if (empRes.success && Array.isArray(empRes.employees)) {
         setEmployees(empRes.employees);
-      }
-      if (sitesRes.success && Array.isArray(sitesRes.sites)) {
-        setSites(sitesRes.sites);
       }
       if (otRes.success && Array.isArray(otRes.overtime)) {
         setOvertimeList(otRes.overtime as OvertimeItem[]);
@@ -340,17 +372,19 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
           <span className="text-xs font-medium text-slate-400 block mb-1">Total Employees</span>
           <span className="text-2xl font-bold text-white font-mono">{employees.length}</span>
         </div>
-        <div className="glass-card rounded-2xl p-4">
-          <span className="text-xs font-medium text-slate-400 block mb-1">Active Job Sites</span>
-          <span className="text-2xl font-bold text-white font-mono">{sites.length}</span>
+        <div className="glass-card rounded-2xl p-4 border-emerald-500/20 bg-emerald-500/5">
+          <span className="text-xs font-medium text-emerald-400 block mb-1">Clocked-In Now</span>
+          <span className="text-2xl font-bold text-emerald-300 font-mono">
+            {attendanceList.filter((a) => (a.Status || a.status) === 'Active' || !(a['End Time'] || a.endTime)).length}
+          </span>
         </div>
         <div className="glass-card rounded-2xl p-4 border-amber-500/30 bg-amber-500/5">
           <span className="text-xs font-medium text-amber-400 block mb-1">Pending Overtime</span>
           <span className="text-2xl font-bold text-amber-300 font-mono">{overtimeList.length}</span>
         </div>
         <div className="glass-card rounded-2xl p-4">
-          <span className="text-xs font-medium text-slate-400 block mb-1">Today's Attendance</span>
-          <span className="text-2xl font-bold text-emerald-400 font-mono">{attendanceList.length}</span>
+          <span className="text-xs font-medium text-slate-400 block mb-1">Today's Shifts</span>
+          <span className="text-2xl font-bold text-blue-400 font-mono">{attendanceList.length}</span>
         </div>
       </div>
 
@@ -358,10 +392,9 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
       <div className="flex border-b border-slate-800 space-x-1 sm:space-x-2 overflow-x-auto pb-1">
         {[
           { id: 'overtime', label: `Pending Overtime (${overtimeList.length})` },
-          { id: 'attendance', label: 'Attendance Ledger' },
+          { id: 'attendance', label: 'Attendance & GPS Locations' },
           { id: 'reports', label: 'Daily Reports' },
           { id: 'employees', label: 'Employees' },
-          { id: 'sites', label: 'Job Sites' },
           { id: 'audit', label: 'Audit Logs' },
         ].map((tab) => (
           <button
@@ -446,16 +479,21 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
             {activeTab === 'attendance' && (
               <div>
                 <div className="flex justify-between items-center mb-4">
-                  <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">
-                    Attendance & Shift Ledger
-                  </h2>
+                  <div>
+                    <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">
+                      Attendance & Shift Ledger
+                    </h2>
+                    <p className="text-xs text-slate-400">
+                      Live clock-in and clock-out timestamps with exact GPS location links
+                    </p>
+                  </div>
                   {attendanceList.length > 0 && (
                     <button
                       onClick={handleExportCsv}
                       className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-blue-400 hover:text-blue-300 border border-slate-700 text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer shadow-sm"
                     >
                       <span>📥</span>
-                      <span>Export Attendance CSV</span>
+                      <span>Export CSV with GPS</span>
                     </button>
                   )}
                 </div>
@@ -467,44 +505,99 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                       <thead className="text-[10px] uppercase tracking-wider text-slate-400 border-b border-slate-700/80">
                         <tr>
                           <th className="py-2.5 pr-4">Shift ID</th>
-                          <th className="py-2.5 pr-4">Employee ID</th>
-                          <th className="py-2.5 pr-4">Site</th>
-                          <th className="py-2.5 pr-4">Clock In</th>
-                          <th className="py-2.5 pr-4">Clock Out</th>
-                          <th className="py-2.5 pr-4">Reg / OT</th>
+                          <th className="py-2.5 pr-4">Employee</th>
+                          <th className="py-2.5 pr-4">Clock In (Time & GPS)</th>
+                          <th className="py-2.5 pr-4">Clock Out (Time & GPS)</th>
+                          <th className="py-2.5 pr-4">Hours (Reg / OT)</th>
                           <th className="py-2.5">Status</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800">
-                        {attendanceList.map((att) => (
-                          <tr key={att.ID} className="hover:bg-slate-800/30">
-                            <td className="py-3 pr-4 font-mono text-slate-400">{att.ID}</td>
-                            <td className="py-3 pr-4 font-mono font-medium text-white">{att['Employee ID']}</td>
-                            <td className="py-3 pr-4 font-mono">{att['Site ID']}</td>
-                            <td className="py-3 pr-4 font-mono">
-                              {new Date(att['Start Time']).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                            </td>
-                            <td className="py-3 pr-4 font-mono">
-                              {att['End Time']
-                                ? new Date(att['End Time']).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                                : '—'}
-                            </td>
-                            <td className="py-3 pr-4 font-mono">
-                              {att['Regular Hours'] || 0}h / {att['Overtime Hours'] || 0}h
-                            </td>
-                            <td className="py-3">
-                              <span
-                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                                  att.Status === 'Completed'
-                                    ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                                    : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
-                                }`}
-                              >
-                                {att.Status}
-                              </span>
-                            </td>
-                          </tr>
-                        ))}
+                        {attendanceList.map((att) => {
+                          const sLat = att.startLat ?? att['Start Latitude'];
+                          const sLon = att.startLon ?? att['Start Longitude'];
+                          const eLat = att.endLat ?? att['End Latitude'];
+                          const eLon = att.endLon ?? att['End Longitude'];
+
+                          return (
+                            <tr key={att.ID || att.shiftId} className="hover:bg-slate-800/30">
+                              <td className="py-3 pr-4 font-mono text-slate-400">{att.ID || att.shiftId}</td>
+                              <td className="py-3 pr-4 font-mono font-medium text-white">
+                                {att['Employee ID'] || att.employeeId}
+                              </td>
+                              <td className="py-3 pr-4">
+                                <div className="text-white font-medium">
+                                  {new Date(att['Start Time'] || att.startTime || Date.now()).toLocaleTimeString([], {
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                  })}
+                                </div>
+                                {sLat != null && sLon != null && !isNaN(Number(sLat)) ? (
+                                  <a
+                                    href={`https://www.google.com/maps?q=${sLat},${sLon}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="inline-flex items-center gap-1 text-[11px] font-mono text-emerald-400 hover:text-emerald-300 hover:underline mt-0.5"
+                                  >
+                                    <span>📍</span>
+                                    <span>
+                                      {Number(sLat).toFixed(4)}, {Number(sLon).toFixed(4)}
+                                    </span>
+                                    <span className="text-[9px]">↗</span>
+                                  </a>
+                                ) : (
+                                  <span className="text-[10px] text-slate-500">—</span>
+                                )}
+                              </td>
+                              <td className="py-3 pr-4">
+                                {att['End Time'] || att.endTime ? (
+                                  <>
+                                    <div className="text-white font-medium">
+                                      {new Date((att['End Time'] || att.endTime) as string).toLocaleTimeString([], {
+                                        hour: '2-digit',
+                                        minute: '2-digit',
+                                      })}
+                                    </div>
+                                    {eLat != null && eLon != null && !isNaN(Number(eLat)) ? (
+                                      <a
+                                        href={`https://www.google.com/maps?q=${eLat},${eLon}`}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="inline-flex items-center gap-1 text-[11px] font-mono text-emerald-400 hover:text-emerald-300 hover:underline mt-0.5"
+                                      >
+                                        <span>📍</span>
+                                        <span>
+                                          {Number(eLat).toFixed(4)}, {Number(eLon).toFixed(4)}
+                                        </span>
+                                        <span className="text-[9px]">↗</span>
+                                      </a>
+                                    ) : (
+                                      <span className="text-[10px] text-slate-500">—</span>
+                                    )}
+                                  </>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                                    Active On Shift
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-3 pr-4 font-mono">
+                                {att['Regular Hours'] || att.regularHours || 0}h / {att['Overtime Hours'] || att.overtimeHours || 0}h
+                              </td>
+                              <td className="py-3">
+                                <span
+                                  className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                    att.Status === 'Completed' || att.status === 'Completed'
+                                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                      : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
+                                  }`}
+                                >
+                                  {att.Status || att.status}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -745,72 +838,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
               </div>
             )}
 
-            {/* 4. JOB SITES TAB */}
-            {activeTab === 'sites' && (
-              <div>
-                <div className="flex justify-between items-center mb-4">
-                  <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">
-                    Registered Job Sites & Geofences
-                  </h2>
-                  <button
-                    onClick={() => {
-                      setSiteToEdit(null);
-                      setShowAddSiteModal(true);
-                    }}
-                    className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-md shadow-blue-600/30 transition-all flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <span>+</span>
-                    <span>Add Job Site</span>
-                  </button>
-                </div>
-                {sites.length === 0 ? (
-                  <p className="text-sm text-slate-500 py-8 text-center">No job sites registered in Google Sheets.</p>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-xs text-slate-300">
-                      <thead className="text-[10px] uppercase tracking-wider text-slate-400 border-b border-slate-700/80">
-                        <tr>
-                          <th className="py-2.5 pr-4">Site ID</th>
-                          <th className="py-2.5 pr-4">Site Name</th>
-                          <th className="py-2.5 pr-4">Coordinates (Lat, Lon)</th>
-                          <th className="py-2.5 pr-4">Geofence Radius</th>
-                          <th className="py-2.5 pr-4">Status</th>
-                          <th className="py-2.5">Action</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-800">
-                        {sites.map((site) => (
-                          <tr key={site.ID} className="hover:bg-slate-800/30">
-                            <td className="py-3 pr-4 font-mono font-medium text-blue-400">{site.ID}</td>
-                            <td className="py-3 pr-4 text-white font-medium">{site.Name}</td>
-                            <td className="py-3 pr-4 font-mono text-slate-400">
-                              {site.Latitude.toFixed(6)}, {site.Longitude.toFixed(6)}
-                            </td>
-                            <td className="py-3 pr-4 font-mono">{site['Geofence Radius']}m</td>
-                            <td className="py-3 pr-4">
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                                {site.Status}
-                              </span>
-                            </td>
-                            <td className="py-3">
-                              <button
-                                onClick={() => {
-                                  setSiteToEdit(site);
-                                  setShowAddSiteModal(true);
-                                }}
-                                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-blue-400 hover:text-blue-300 rounded-lg text-xs font-semibold border border-slate-700 transition-all cursor-pointer"
-                              >
-                                Edit Location
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            )}
+
 
             {/* 5. AUDIT LOGS TAB */}
             {activeTab === 'audit' && (
@@ -903,24 +931,6 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
 
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
-                  Assigned Job Site
-                </label>
-                <select
-                  value={newEmpSiteId}
-                  onChange={(e) => setNewEmpSiteId(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="">Unassigned</option>
-                  {sites.map((s) => (
-                    <option key={s.ID} value={s.ID}>
-                      {s.Name} ({s.ID})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
                   Initial Access PIN
                 </label>
                 <input
@@ -955,23 +965,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
         </div>
       )}
 
-      {/* Add / Edit Job Site Modal */}
-      {showAddSiteModal && (
-        <JobSiteModal
-          token={session.token}
-          siteToEdit={siteToEdit}
-          onClose={() => {
-            setShowAddSiteModal(false);
-            setSiteToEdit(null);
-          }}
-          onSaved={(msg) => {
-            setActionMessage({ type: 'success', text: msg });
-            setShowAddSiteModal(false);
-            setSiteToEdit(null);
-            handleRefresh();
-          }}
-        />
-      )}
+
 
       {/* Change PIN Modal */}
       <ChangePinModal
