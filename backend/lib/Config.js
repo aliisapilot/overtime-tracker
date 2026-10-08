@@ -1,0 +1,21 @@
+// Google Apps Script Configuration
+const CONFIG = {
+  SESSION_TIMEOUT: 24 * 60 * 60 * 1000,
+  MAX_LOGIN_ATTEMPTS: 5,
+  LOCK_TIMEOUT: 30 * 1000,
+  GPS_ACCURACY_THRESHOLD: 20,
+  GPS_RETRY_ATTEMPTS: 3,
+  GPS_MAX_ACCURACY_MISMATCH: 30,
+  DEFAULT_GEOFENCE_RADIUS: 100,
+  DEFAULT_REGULAR_HOURS: 8,
+  DEFAULT_BREAK_DURATION: 60,
+};
+
+const SHEETS = {
+  EMPLOYEES: 'Employees',
+  JOB_SITES: 'Job Sites',
+  SHIFTS: 'Shifts',
+  OVERTIME: 'Overtime',
+  SETTINGS: 'Settings',
+  AUDIT_LOGS: 'Audit Logs',
+};
