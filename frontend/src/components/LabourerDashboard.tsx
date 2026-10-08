@@ -15,6 +15,7 @@ import {
   calculateDistanceMeters,
   GpsCoordinates,
 } from '@/lib/geo';
+import ChangePinModal from '@/components/ChangePinModal';
 
 const GeofenceMap = dynamic(() => import('@/components/GeofenceMap'), {
   ssr: false,
@@ -48,6 +49,7 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
   const [actionLoading, setActionLoading] = useState(false);
   const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [breakMinutes, setBreakMinutes] = useState(60);
+  const [showPinModal, setShowPinModal] = useState(false);
 
   // Load employee profile & assigned site
   const loadData = useCallback(async () => {
@@ -251,12 +253,20 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
             </div>
           </div>
         </div>
-        <button
-          onClick={onLogout}
-          className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700 rounded-xl transition-all"
-        >
-          Sign Out
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowPinModal(true)}
+            className="px-3.5 py-2 text-xs font-semibold uppercase tracking-wider text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700 rounded-xl transition-all cursor-pointer"
+          >
+            Change PIN
+          </button>
+          <button
+            onClick={onLogout}
+            className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700 rounded-xl transition-all cursor-pointer"
+          >
+            Sign Out
+          </button>
+        </div>
       </header>
 
       {/* Action Notification Banner */}
@@ -584,6 +594,14 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
           </div>
         )}
       </section>
+
+      {/* Change PIN Modal */}
+      <ChangePinModal
+        token={session.token}
+        isOpen={showPinModal}
+        onClose={() => setShowPinModal(false)}
+        onSuccess={() => setActionMessage({ type: 'success', text: 'Security PIN updated successfully!' })}
+      />
     </div>
   );
 }

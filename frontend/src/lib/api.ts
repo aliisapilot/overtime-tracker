@@ -313,6 +313,50 @@ export async function getAuditLogs(token: string, limit?: number): Promise<ApiRe
 }
 
 /**
+ * Change PIN (Self-service for Labourer or Admin)
+ */
+export async function changePin(
+  token: string,
+  currentPin: string,
+  newPin: string
+): Promise<ApiResponse> {
+  return sendGasRequest({
+    action: 'changePin',
+    token,
+    currentPin,
+    newPin,
+  });
+}
+
+/**
+ * Admin: Generate Daily Attendance Report
+ */
+export async function generateDailyReport(
+  token: string,
+  date?: string
+): Promise<ApiResponse<{ report: unknown }>> {
+  return sendGasRequest<{ report: unknown }>({
+    action: 'generateDailyReport',
+    token,
+    date,
+  });
+}
+
+/**
+ * Admin: Generate Monthly Attendance Report
+ */
+export async function generateMonthlyReport(
+  token: string,
+  month?: string
+): Promise<ApiResponse<{ report: unknown }>> {
+  return sendGasRequest<{ report: unknown }>({
+    action: 'generateMonthlyReport',
+    token,
+    month,
+  });
+}
+
+/**
  * Local session storage management
  */
 const SESSION_STORAGE_KEY = 'overtime_tracker_session';

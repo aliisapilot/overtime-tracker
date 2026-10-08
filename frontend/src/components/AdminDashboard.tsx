@@ -12,6 +12,7 @@ import {
   approveOvertime,
   getAuditLogs,
 } from '@/lib/api';
+import ChangePinModal from '@/components/ChangePinModal';
 
 interface AdminDashboardProps {
   session: UserSession;
@@ -66,6 +67,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
   const [showAddEmpModal, setShowAddEmpModal] = useState(false);
   const [showAddSiteModal, setShowAddSiteModal] = useState(false);
   const [submittingModal, setSubmittingModal] = useState(false);
+  const [showPinModal, setShowPinModal] = useState(false);
 
   // New Employee Form
   const [newEmpName, setNewEmpName] = useState('');
@@ -245,6 +247,12 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
         </div>
         <div className="flex items-center gap-3">
           <button
+            onClick={() => setShowPinModal(true)}
+            className="px-3.5 py-2 text-xs font-semibold uppercase tracking-wider text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700 rounded-xl transition-all cursor-pointer"
+          >
+            Change PIN
+          </button>
+          <button
             onClick={handleRefresh}
             disabled={refreshing}
             className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-blue-400 hover:text-blue-300 bg-blue-950/40 hover:bg-blue-900/50 border border-blue-800/60 rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
@@ -254,7 +262,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
           </button>
           <button
             onClick={onLogout}
-            className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700 rounded-xl transition-all"
+            className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700 rounded-xl transition-all cursor-pointer"
           >
             Sign Out
           </button>
@@ -810,6 +818,14 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
           </div>
         </div>
       )}
+
+      {/* Change PIN Modal */}
+      <ChangePinModal
+        token={session.token}
+        isOpen={showPinModal}
+        onClose={() => setShowPinModal(false)}
+        onSuccess={() => setActionMessage({ type: 'success', text: 'Administrator PIN updated successfully!' })}
+      />
     </div>
   );
 }
