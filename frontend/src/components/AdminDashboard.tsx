@@ -11,8 +11,21 @@ import {
   getPendingOvertime,
   approveOvertime,
   getAuditLogs,
+  generateDailyReport,
 } from '@/lib/api';
 import ChangePinModal from '@/components/ChangePinModal';
+
+interface DailyReportData {
+  date: string;
+  totalActiveEmployees: number;
+  totalShifts: number;
+  completedShifts: number;
+  activeShifts: number;
+  totalRegularHours: number;
+  totalOvertimeHours: number;
+  bySite: Record<string, { siteName: string; shifts: number; regularHours: number; overtimeHours: number }>;
+  byEmployee: Record<string, { employeeName: string; shifts: number; regularHours: number; overtimeHours: number }>;
+}
 
 interface AdminDashboardProps {
   session: UserSession;
@@ -51,10 +64,15 @@ interface AuditLogItem {
 }
 
 export default function AdminDashboard({ session, onLogout }: AdminDashboardProps) {
-  const [activeTab, setActiveTab] = useState<'overtime' | 'attendance' | 'sites' | 'employees' | 'audit'>('overtime');
+  const [activeTab, setActiveTab] = useState<'overtime' | 'attendance' | 'reports' | 'employees' | 'sites' | 'audit'>('overtime');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Reports state
+  const [reportDate, setReportDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [dailyReport, setDailyReport] = useState<DailyReportData | null>(null);
+  const [loadingReport, setLoadingReport] = useState(false);
 
   // Data states
   const [employees, setEmployees] = useState<EmployeeProfile[]>([]);
@@ -171,6 +189,66 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
     document.body.removeChild(link);
   };
 
+  const handleGenerateReport = useCallback(
+    async (selectedDate?: string) => {
+      setLoadingReport(true);
+      try {
+        const targetDate = selectedDate || reportDate;
+        const res = await generateDailyReport(session.token, targetDate);
+        if (res.success && res.report) {
+          setDailyReport(res.report as DailyReportData);
+        } else {
+          setActionMessage({ type: 'error', text: res.message || 'Failed to generate daily report' });
+        }
+      } catch (err: unknown) {
+        setActionMessage({ type: 'error', text: (err as Error).message });
+      } finally {
+        setLoadingReport(false);
+      }
+    },
+    [session.token, reportDate]
+  );
+
+  const handleExportReportCsv = () => {
+    if (!dailyReport) return;
+    const lines: string[] = [];
+    lines.push(`DAILY ATTENDANCE & OVERTIME REPORT,Date: ${dailyReport.date}`);
+    lines.push(`Generated At,${new Date().toLocaleString()}`);
+    lines.push('');
+    lines.push('METRIC,VALUE');
+    lines.push(`Total Shifts,${dailyReport.totalShifts}`);
+    lines.push(`Completed Shifts,${dailyReport.completedShifts}`);
+    lines.push(`Active Shifts,${dailyReport.activeShifts}`);
+    lines.push(`Total Regular Hours,${dailyReport.totalRegularHours}`);
+    lines.push(`Total Overtime Hours,${dailyReport.totalOvertimeHours}`);
+    lines.push(`Active Workforce,${dailyReport.totalActiveEmployees}`);
+    lines.push('');
+    lines.push('BREAKDOWN BY JOB SITE');
+    lines.push('Site ID,Site Name,Shifts,Regular Hours,Overtime Hours,Total Hours');
+    Object.entries(dailyReport.bySite).forEach(([siteId, data]) => {
+      lines.push(
+        `${siteId},"${data.siteName.replace(/"/g, '""')}",${data.shifts},${data.regularHours.toFixed(1)},${data.overtimeHours.toFixed(1)},${(data.regularHours + data.overtimeHours).toFixed(1)}`
+      );
+    });
+    lines.push('');
+    lines.push('BREAKDOWN BY EMPLOYEE');
+    lines.push('Employee ID,Employee Name,Shifts,Regular Hours,Overtime Hours,Total Hours');
+    Object.entries(dailyReport.byEmployee).forEach(([empId, data]) => {
+      lines.push(
+        `${empId},"${data.employeeName.replace(/"/g, '""')}",${data.shifts},${data.regularHours.toFixed(1)},${data.overtimeHours.toFixed(1)},${(data.regularHours + data.overtimeHours).toFixed(1)}`
+      );
+    });
+
+    const csvContent = 'data:text/csv;charset=utf-8,' + lines.join('\n');
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute('download', `daily_report_${dailyReport.date}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   const loadAllData = useCallback(async () => {
     try {
       const [empRes, sitesRes, otRes, attRes, auditRes] = await Promise.all([
@@ -207,6 +285,12 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
   useEffect(() => {
     loadAllData();
   }, [loadAllData]);
+
+  useEffect(() => {
+    if (activeTab === 'reports' && !dailyReport) {
+      handleGenerateReport();
+    }
+  }, [activeTab, dailyReport, handleGenerateReport]);
 
   const handleRefresh = () => {
     setRefreshing(true);
@@ -311,6 +395,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
         {[
           { id: 'overtime', label: `Pending Overtime (${overtimeList.length})` },
           { id: 'attendance', label: 'Attendance Ledger' },
+          { id: 'reports', label: 'Daily Reports' },
           { id: 'employees', label: 'Employees' },
           { id: 'sites', label: 'Job Sites' },
           { id: 'audit', label: 'Audit Logs' },
@@ -463,7 +548,184 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
               </div>
             )}
 
-            {/* 3. EMPLOYEES TAB */}
+            {/* 3. DAILY REPORTS TAB */}
+            {activeTab === 'reports' && (
+              <div className="space-y-6">
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                  <div>
+                    <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">
+                      Daily Attendance & Overtime Reports
+                    </h2>
+                    <p className="text-xs text-slate-400">
+                      Aggregated shift totals, regular and overtime hours by job site and employee
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="date"
+                      value={reportDate}
+                      onChange={(e) => {
+                        setReportDate(e.target.value);
+                        handleGenerateReport(e.target.value);
+                      }}
+                      className="bg-slate-800 border border-slate-700 text-white rounded-xl px-3 py-1.5 text-xs font-mono focus:outline-none focus:border-blue-500"
+                    />
+                    <button
+                      onClick={() => handleGenerateReport(reportDate)}
+                      disabled={loadingReport}
+                      className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-md shadow-blue-600/30 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      <span className={loadingReport ? 'animate-spin' : ''}>↻</span>
+                      <span>{loadingReport ? 'Generating...' : 'Refresh'}</span>
+                    </button>
+                    {dailyReport && dailyReport.totalShifts > 0 && (
+                      <button
+                        onClick={handleExportReportCsv}
+                        className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-blue-400 hover:text-blue-300 border border-slate-700 text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer shadow-sm"
+                      >
+                        <span>📥</span>
+                        <span>Export CSV</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {loadingReport ? (
+                  <div className="py-12 flex flex-col items-center justify-center text-slate-400 space-y-3">
+                    <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                    <p className="text-sm">Calculating aggregated report for {reportDate} from Google Sheets...</p>
+                  </div>
+                ) : !dailyReport ? (
+                  <p className="text-sm text-slate-500 py-8 text-center">
+                    Select a date and click Refresh to generate a report.
+                  </p>
+                ) : (
+                  <div className="space-y-6">
+                    {/* Summary KPI Badges */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                      <div className="glass-card rounded-2xl p-3 border border-slate-700/60">
+                        <span className="text-[11px] font-medium text-slate-400 block mb-0.5">Total Shifts</span>
+                        <div className="flex items-baseline gap-2">
+                          <span className="text-xl font-bold text-white font-mono">{dailyReport.totalShifts}</span>
+                          <span className="text-[10px] text-slate-400">
+                            ({dailyReport.completedShifts} done, {dailyReport.activeShifts} active)
+                          </span>
+                        </div>
+                      </div>
+                      <div className="glass-card rounded-2xl p-3 border border-slate-700/60">
+                        <span className="text-[11px] font-medium text-slate-400 block mb-0.5">Regular Hours</span>
+                        <span className="text-xl font-bold text-emerald-400 font-mono">
+                          {dailyReport.totalRegularHours} hrs
+                        </span>
+                      </div>
+                      <div className="glass-card rounded-2xl p-3 border border-amber-500/30 bg-amber-500/5">
+                        <span className="text-[11px] font-medium text-amber-400 block mb-0.5">Overtime Hours</span>
+                        <span className="text-xl font-bold text-amber-300 font-mono">
+                          {dailyReport.totalOvertimeHours} hrs
+                        </span>
+                      </div>
+                      <div className="glass-card rounded-2xl p-3 border border-slate-700/60">
+                        <span className="text-[11px] font-medium text-slate-400 block mb-0.5">Active Workforce</span>
+                        <span className="text-xl font-bold text-blue-400 font-mono">
+                          {dailyReport.totalActiveEmployees}
+                        </span>
+                      </div>
+                    </div>
+
+                    {dailyReport.totalShifts === 0 ? (
+                      <div className="p-8 rounded-2xl bg-slate-800/30 border border-slate-800 text-center">
+                        <p className="text-sm text-slate-400">No shifts recorded for {dailyReport.date}.</p>
+                        <p className="text-xs text-slate-500 mt-1">
+                          When workers clock in or complete shifts on this date, daily summaries and site breakdowns will appear here.
+                        </p>
+                      </div>
+                    ) : (
+                      <>
+                        {/* Breakdown by Job Site */}
+                        <div className="space-y-3">
+                          <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-300">
+                            Breakdown by Job Site
+                          </h3>
+                          <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/40">
+                            <table className="w-full text-left text-xs text-slate-300">
+                              <thead className="text-[10px] uppercase tracking-wider text-slate-400 border-b border-slate-700/80 bg-slate-900/60">
+                                <tr>
+                                  <th className="py-2.5 px-4">Site ID</th>
+                                  <th className="py-2.5 px-4">Site Name</th>
+                                  <th className="py-2.5 px-4">Shifts</th>
+                                  <th className="py-2.5 px-4">Regular Hrs</th>
+                                  <th className="py-2.5 px-4">Overtime Hrs</th>
+                                  <th className="py-2.5 px-4">Total Hrs</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-800">
+                                {Object.entries(dailyReport.bySite).map(([siteId, data]) => (
+                                  <tr key={siteId} className="hover:bg-slate-800/30">
+                                    <td className="py-3 px-4 font-mono text-blue-400 font-medium">{siteId}</td>
+                                    <td className="py-3 px-4 text-white font-medium">{data.siteName}</td>
+                                    <td className="py-3 px-4 font-mono">{data.shifts}</td>
+                                    <td className="py-3 px-4 font-mono text-emerald-400">
+                                      {data.regularHours.toFixed(1)} hrs
+                                    </td>
+                                    <td className="py-3 px-4 font-mono text-amber-400 font-bold">
+                                      {data.overtimeHours.toFixed(1)} hrs
+                                    </td>
+                                    <td className="py-3 px-4 font-mono text-white font-bold">
+                                      {(data.regularHours + data.overtimeHours).toFixed(1)} hrs
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+
+                        {/* Breakdown by Employee */}
+                        <div className="space-y-3">
+                          <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-300">
+                            Breakdown by Employee
+                          </h3>
+                          <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/40">
+                            <table className="w-full text-left text-xs text-slate-300">
+                              <thead className="text-[10px] uppercase tracking-wider text-slate-400 border-b border-slate-700/80 bg-slate-900/60">
+                                <tr>
+                                  <th className="py-2.5 px-4">Employee ID</th>
+                                  <th className="py-2.5 px-4">Employee Name</th>
+                                  <th className="py-2.5 px-4">Shifts</th>
+                                  <th className="py-2.5 px-4">Regular Hrs</th>
+                                  <th className="py-2.5 px-4">Overtime Hrs</th>
+                                  <th className="py-2.5 px-4">Total Hrs</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-800">
+                                {Object.entries(dailyReport.byEmployee).map(([empId, data]) => (
+                                  <tr key={empId} className="hover:bg-slate-800/30">
+                                    <td className="py-3 px-4 font-mono text-blue-400 font-medium">{empId}</td>
+                                    <td className="py-3 px-4 text-white font-medium">{data.employeeName}</td>
+                                    <td className="py-3 px-4 font-mono">{data.shifts}</td>
+                                    <td className="py-3 px-4 font-mono text-emerald-400">
+                                      {data.regularHours.toFixed(1)} hrs
+                                    </td>
+                                    <td className="py-3 px-4 font-mono text-amber-400 font-bold">
+                                      {data.overtimeHours.toFixed(1)} hrs
+                                    </td>
+                                    <td className="py-3 px-4 font-mono text-white font-bold">
+                                      {(data.regularHours + data.overtimeHours).toFixed(1)} hrs
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 4. EMPLOYEES TAB */}
             {activeTab === 'employees' && (
               <div>
                 <div className="flex justify-between items-center mb-4">

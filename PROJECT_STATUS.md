@@ -22,8 +22,9 @@
   - Live attendance history loaded directly from Google Sheets.
 - [x] **Ateeb Administrator Dashboard**:
   - Live statistics: Total Employees, Active Job Sites, Pending Overtime, Today's Attendance.
-  - Tabbed management: Overtime Authorization (with one-click approval), Attendance Ledger, Registered Workforce, Job Sites, and Audit Trail.
+  - Tabbed management: Overtime Authorization (with one-click approval), Attendance Ledger, Daily Reports (aggregated shift totals, regular and overtime hours by site and employee, CSV export), Registered Workforce, Job Sites, and Audit Trail.
   - Sync Data button for instant Google Sheets refresh.
+- [x] **Daily Reports & CSV Export (Admin Portal)**: Real-time query by date with KPI summary cards, site-by-site breakdown, employee breakdown, and formatted CSV export.
 - [x] **Leaflet + OpenStreetMap Visual Geofencing**: Added interactive OpenStreetMap visualization on Labourer Dashboard displaying assigned site marker, circular geofence boundary, live GPS location marker, and accuracy radius.
 - [x] **Workforce & Job Site Creation (Admin Portal)**:
   - Register Labourer modal: Directly creates new employees in Google Sheets with PBKDF2 hash (25k iter).
