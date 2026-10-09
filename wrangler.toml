@@ -1,0 +1,6 @@
+name = "overtime-tracker"
+compatibility_date = "2024-09-23"
+
+[assets]
+directory = "./frontend/out"
+binding = "ASSETS"
