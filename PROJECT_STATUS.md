@@ -1,7 +1,7 @@
 # Project Status
 
-**Last Updated**: 2026-10-09
-**Version**: 1.4.0 (Direct GPS Clock-In & Clock-Out Location Tracking, Frictionless Mobile Operations)
+**Last Updated**: 2026-10-10
+**Version**: 1.5.0 (Simplified Sequential Employee IDs EMP001, Dual-Field Numeric Keypad Login, Full Workforce Profile Management)
 
 ---
 
