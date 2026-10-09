@@ -440,10 +440,13 @@ runTest('Admin can create a new employee with PBKDF2 hash (25,000 iter)', () => 
 });
 
 runTest('Admin daily attendance report generates correctly', () => {
+  const shiftRecord = SheetsService.findById(SHEETS.SHIFTS, activeShiftId);
+  const shiftDate = shiftRecord['Start Time'].split('T')[0];
   const req = {
     postData: {
       contents: JSON.stringify({
         action: 'generateDailyReport',
+        date: shiftDate,
         token: adminToken
       })
     }
