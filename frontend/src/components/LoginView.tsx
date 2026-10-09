@@ -27,10 +27,12 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
     };
   }, []);
 
+  const [focusedField, setFocusedField] = useState<'id' | 'pin'>('id');
+
   const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!employeeId.trim()) {
-      setError('Please enter your Employee ID (e.g. EMP000 or EMP001)');
+      setError('Please enter your Employee ID (e.g. EMP000, EMP001, or just 1)');
       return;
     }
     if (!pin.trim()) {
@@ -59,17 +61,29 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
   };
 
   const handleKeypadPress = (val: string) => {
-    if (pin.length < 8) {
-      setPin((prev) => prev + val);
+    if (focusedField === 'id') {
+      setEmployeeId((prev) => prev + val);
+    } else {
+      if (pin.length < 8) {
+        setPin((prev) => prev + val);
+      }
     }
   };
 
   const handleKeypadBackspace = () => {
-    setPin((prev) => prev.slice(0, -1));
+    if (focusedField === 'id') {
+      setEmployeeId((prev) => prev.slice(0, -1));
+    } else {
+      setPin((prev) => prev.slice(0, -1));
+    }
   };
 
   const handleKeypadClear = () => {
-    setPin('');
+    if (focusedField === 'id') {
+      setEmployeeId('');
+    } else {
+      setPin('');
+    }
   };
 
   return (
@@ -130,12 +144,20 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
                   type="text"
                   autoComplete="username"
                   required
-                  placeholder="e.g. EMP000 or EMP001"
+                  placeholder="e.g. EMP001 or 1"
                   value={employeeId}
+                  onFocus={() => setFocusedField('id')}
                   onChange={(e) => setEmployeeId(e.target.value.toUpperCase())}
-                  className="block w-full pl-11 pr-4 py-3 bg-slate-900/90 border border-slate-700/80 rounded-xl text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-base transition-all"
+                  className={`block w-full pl-11 pr-4 py-3 bg-slate-900/90 border rounded-xl text-slate-100 placeholder-slate-500 focus:outline-none font-mono text-base transition-all ${
+                    focusedField === 'id' && activeTab === 'keypad'
+                      ? 'border-blue-500 ring-2 ring-blue-500/30'
+                      : 'border-slate-700/80 focus:ring-2 focus:ring-blue-500'
+                  }`}
                 />
               </div>
+              <p className="mt-1.5 text-[11px] text-slate-400">
+                Labourers: enter <span className="text-blue-400 font-mono">EMP001</span> or just your number (e.g. <span className="text-blue-400 font-mono">1</span> or <span className="text-blue-400 font-mono">001</span>)
+              </p>
             </div>
 
             {/* PIN Field */}
@@ -167,8 +189,13 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
                   required
                   placeholder="••••••••"
                   value={pin}
+                  onFocus={() => setFocusedField('pin')}
                   onChange={(e) => setPin(e.target.value)}
-                  className="block w-full pl-11 pr-11 py-3 bg-slate-900/90 border border-slate-700/80 rounded-xl text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-lg tracking-widest transition-all"
+                  className={`block w-full pl-11 pr-11 py-3 bg-slate-900/90 border rounded-xl text-slate-100 placeholder-slate-500 focus:outline-none font-mono text-lg tracking-widest transition-all ${
+                    focusedField === 'pin' && activeTab === 'keypad'
+                      ? 'border-blue-500 ring-2 ring-blue-500/30'
+                      : 'border-slate-700/80 focus:ring-2 focus:ring-blue-500'
+                  }`}
                 />
                 <button
                   type="button"
@@ -202,6 +229,32 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
             {/* Onscreen Keypad for mobile/tablet site workers */}
             {activeTab === 'keypad' && (
               <div className="pt-2">
+                {/* Active Keypad Target Selector */}
+                <div className="flex items-center gap-2 bg-slate-900/80 p-1.5 rounded-xl border border-slate-700/80 mb-3">
+                  <button
+                    type="button"
+                    onClick={() => setFocusedField('id')}
+                    className={`flex-1 py-1.5 px-2 text-xs font-semibold rounded-lg transition-all ${
+                      focusedField === 'id'
+                        ? 'bg-blue-600 text-white shadow-md'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    Typing ID: {employeeId ? <span className="font-mono text-white">{employeeId}</span> : <span className="text-slate-500 font-normal">tap</span>}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFocusedField('pin')}
+                    className={`flex-1 py-1.5 px-2 text-xs font-semibold rounded-lg transition-all ${
+                      focusedField === 'pin'
+                        ? 'bg-blue-600 text-white shadow-md'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    Typing PIN: {pin ? <span className="font-mono tracking-widest text-white">{'•'.repeat(pin.length)}</span> : <span className="text-slate-500 font-normal">tap</span>}
+                  </button>
+                </div>
+
                 <div className="grid grid-cols-3 gap-2.5">
                   {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
                     <button

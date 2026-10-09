@@ -236,10 +236,33 @@ export async function getJobSites(token: string): Promise<ApiResponse<{ sites: J
  */
 export async function createEmployee(
   token: string,
-  data: { name: string; phone: string; role?: 'Labourer' | 'Admin'; siteId?: string; pin: string }
+  data: { employeeId?: string; name: string; phone: string; role?: 'Labourer' | 'Admin'; siteId?: string; pin: string }
 ): Promise<ApiResponse<{ employee: EmployeeProfile }>> {
   return sendGasRequest<{ employee: EmployeeProfile }>({
     action: 'createEmployee',
+    token,
+    ...data,
+  });
+}
+
+/**
+ * Admin: Update Existing Employee (ID, Name, Phone, Role, Site, Status, PIN)
+ */
+export async function updateEmployee(
+  token: string,
+  data: {
+    currentId: string;
+    newId?: string;
+    name?: string;
+    phone?: string;
+    role?: 'Labourer' | 'Admin';
+    siteId?: string;
+    status?: string;
+    pin?: string;
+  }
+): Promise<ApiResponse<{ employeeId: string }>> {
+  return sendGasRequest<{ employeeId: string }>({
+    action: 'updateEmployee',
     token,
     ...data,
   });

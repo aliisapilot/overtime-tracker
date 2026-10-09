@@ -136,6 +136,8 @@ function doPost(e) {
         return jsonResponse(_AdminService.getEmployees(params));
       case 'createEmployee':
         return jsonResponse(_AdminService.createEmployee(params, session));
+      case 'updateEmployee':
+        return jsonResponse(_AdminService.updateEmployee(params, session));
       case 'deactivateEmployee':
         return jsonResponse(_AdminService.deactivateEmployee(params, session));
       case 'getAttendance':

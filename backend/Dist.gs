@@ -2,7 +2,7 @@
  * OVERTIME TRACKER — COMPLETE GOOGLE APPS SCRIPT BACKEND
  * Bundled for single-file deployment at script.google.com
  * Owner: Ateeb
- * Generated: 2026-10-08T20:24:15.201Z
+ * Generated: 2026-10-09T16:23:14.804Z
  */
 
 
@@ -836,7 +836,18 @@ var SheetsService = (function() {
   };
 
   SheetsServiceClass.prototype.generateEmployeeId = function() {
-    return this.generateId('EMP');
+    var employees = this.getAllEmployees();
+    var maxNum = 0;
+    employees.forEach(function(e) {
+      var match = String(e.ID || '').match(/^EMP(\d+)$/i);
+      if (match) {
+        var num = parseInt(match[1], 10);
+        if (num > maxNum) maxNum = num;
+      }
+    });
+    var nextNum = maxNum + 1;
+    var padded = nextNum < 1000 ? ('000' + nextNum).slice(-3) : String(nextNum);
+    return 'EMP' + padded;
   };
 
   SheetsServiceClass.prototype.generateSiteId = function() {
@@ -1712,7 +1723,18 @@ var AdminService = (function() {
         }
       }
 
-      var employeeId = _SheetsService.generateEmployeeId();
+      var customId = (params.employeeId || params.id || '').trim().toUpperCase();
+      var employeeId;
+      if (customId) {
+        var existing = _SheetsService.getEmployeeById(customId);
+        if (existing) {
+          return { success: false, message: 'Employee ID ' + customId + ' is already in use' };
+        }
+        employeeId = customId;
+      } else {
+        employeeId = _SheetsService.generateEmployeeId();
+      }
+
       var pinHash = _CryptoUtils.hashPin(pin);
 
       var employeeData = {
@@ -1746,6 +1768,73 @@ var AdminService = (function() {
       };
     } catch (error) {
       return { success: false, message: 'Failed to create employee: ' + (error.message || error) };
+    }
+  };
+
+  /**
+   * Update an existing employee (ID, Name, Phone, Role, Site, Status, or PIN)
+   */
+  AdminServiceClass.prototype.updateEmployee = function(params, session) {
+    try {
+      var currentId = (params.currentId || params.employeeId || params.id || '').trim().toUpperCase();
+      if (!currentId) {
+        return { success: false, message: 'Current Employee ID is required' };
+      }
+
+      var employee = _SheetsService.getEmployeeById(currentId);
+      if (!employee) {
+        return { success: false, message: 'Employee not found: ' + currentId };
+      }
+
+      var newId = (params.newId || params.newEmployeeId || '').trim().toUpperCase();
+      var name = (params.name != null ? params.name : employee.Name).trim();
+      var phone = (params.phone != null ? params.phone : employee.Phone).trim();
+      var role = (params.role != null ? params.role : employee.Role).trim();
+      var siteId = params.siteId != null ? params.siteId : employee['Site ID'];
+      var status = (params.status != null ? params.status : employee.Status).trim();
+
+      if (!name) {
+        return { success: false, message: 'Employee name is required' };
+      }
+
+      if (newId && newId !== currentId) {
+        var existing = _SheetsService.getEmployeeById(newId);
+        if (existing) {
+          return { success: false, message: 'New Employee ID ' + newId + ' is already in use' };
+        }
+      }
+
+      var updateData = {
+        Name: name,
+        Phone: phone,
+        Role: role,
+        'Site ID': siteId,
+        Status: status
+      };
+
+      if (newId && newId !== currentId) {
+        updateData.ID = newId;
+      }
+
+      if (params.pin && String(params.pin).trim().length >= 4) {
+        updateData['PIN Hash'] = _CryptoUtils.hashPin(String(params.pin).trim());
+      }
+
+      var updated = _SheetsService.updateRow(_SHEETS.EMPLOYEES, currentId, updateData);
+      if (!updated) {
+        return { success: false, message: 'Failed to update employee' };
+      }
+
+      var adminName = session ? session.name : 'Admin';
+      this.logAudit(newId || currentId, 'update_employee', 'success', 'Updated employee ' + currentId + (newId && newId !== currentId ? ' (renamed to ' + newId + ')' : ''), adminName);
+
+      return {
+        success: true,
+        employeeId: newId || currentId,
+        message: 'Employee updated successfully'
+      };
+    } catch (error) {
+      return { success: false, message: 'Failed to update employee: ' + (error.message || error) };
     }
   };
 
@@ -2163,6 +2252,15 @@ var AuthService = (function() {
       }
 
       var employee = _SheetsService.getEmployeeById(employeeId);
+      if (!employee && /^\d+$/.test(employeeId)) {
+        var paddedId = 'EMP' + ('000' + employeeId).slice(-3);
+        var fallbackEmployee = _SheetsService.getEmployeeById(paddedId);
+        if (fallbackEmployee) {
+          employee = fallbackEmployee;
+          employeeId = paddedId;
+        }
+      }
+
       if (!employee) {
         this.recordFailedAttempt(employeeId);
         this.logAuthEvent(employeeId, 'login', 'failed', 'Employee ID not found');
@@ -2550,6 +2648,8 @@ function doPost(e) {
         return jsonResponse(_AdminService.getEmployees(params));
       case 'createEmployee':
         return jsonResponse(_AdminService.createEmployee(params, session));
+      case 'updateEmployee':
+        return jsonResponse(_AdminService.updateEmployee(params, session));
       case 'deactivateEmployee':
         return jsonResponse(_AdminService.deactivateEmployee(params, session));
       case 'getAttendance':

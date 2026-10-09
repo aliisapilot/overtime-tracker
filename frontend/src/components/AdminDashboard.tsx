@@ -5,6 +5,7 @@ import {
   EmployeeProfile,
   getEmployees,
   createEmployee,
+  updateEmployee,
   getAttendance,
   getPendingOvertime,
   approveOvertime,
@@ -100,9 +101,64 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
   const [showPinModal, setShowPinModal] = useState(false);
 
   // New Employee Form
+  const [newEmpCustomId, setNewEmpCustomId] = useState('');
   const [newEmpName, setNewEmpName] = useState('');
   const [newEmpPhone, setNewEmpPhone] = useState('');
   const [newEmpPin, setNewEmpPin] = useState('');
+
+  // Edit Employee Form
+  const [editingEmp, setEditingEmp] = useState<EmployeeProfile | null>(null);
+  const [editEmpId, setEditEmpId] = useState('');
+  const [editEmpName, setEditEmpName] = useState('');
+  const [editEmpPhone, setEditEmpPhone] = useState('');
+  const [editEmpSiteId, setEditEmpSiteId] = useState('');
+  const [editEmpStatus, setEditEmpStatus] = useState('Active');
+  const [editEmpPin, setEditEmpPin] = useState('');
+
+  const handleOpenEditEmp = (emp: EmployeeProfile) => {
+    setEditingEmp(emp);
+    setEditEmpId(emp.id);
+    setEditEmpName(emp.name);
+    setEditEmpPhone(emp.phone || '');
+    setEditEmpSiteId(emp.siteId || '');
+    setEditEmpStatus(emp.status || 'Active');
+    setEditEmpPin('');
+  };
+
+  const handleUpdateEmployee = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingEmp) return;
+    if (!editEmpName.trim() || !editEmpId.trim()) {
+      setActionMessage({ type: 'error', text: 'Employee ID and Name are required' });
+      return;
+    }
+    setSubmittingModal(true);
+    try {
+      const res = await updateEmployee(session.token, {
+        currentId: editingEmp.id,
+        newId: editEmpId.trim().toUpperCase(),
+        name: editEmpName.trim(),
+        phone: editEmpPhone.trim(),
+        siteId: editEmpSiteId.trim(),
+        status: editEmpStatus,
+        pin: editEmpPin.trim() || undefined,
+      });
+      if (res.success) {
+        setActionMessage({
+          type: 'success',
+          text: `Employee ${editEmpName} updated successfully (ID: ${editEmpId.trim().toUpperCase()})!`,
+        });
+        setEditingEmp(null);
+        handleRefresh();
+      } else {
+        setActionMessage({ type: 'error', text: res.message || 'Failed to update employee' });
+      }
+    } catch (err: unknown) {
+      setActionMessage({ type: 'error', text: (err as Error).message });
+    } finally {
+      setSubmittingModal(false);
+    }
+  };
 
   const handleCreateEmployee = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -113,14 +169,20 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
     setSubmittingModal(true);
     try {
       const res = await createEmployee(session.token, {
+        employeeId: newEmpCustomId.trim().toUpperCase() || undefined,
         name: newEmpName.trim(),
         phone: newEmpPhone.trim(),
         role: 'Labourer',
         pin: newEmpPin.trim(),
       });
       if (res.success) {
-        setActionMessage({ type: 'success', text: `Labourer ${newEmpName} registered successfully in Google Sheets!` });
+        const assignedId = (res as { employeeId?: string; employee?: { id: string } }).employeeId || (res as { employee?: { id: string } }).employee?.id || 'Registered';
+        setActionMessage({
+          type: 'success',
+          text: `Labourer ${newEmpName} registered successfully! Assigned ID: ${assignedId}`,
+        });
         setShowAddEmpModal(false);
+        setNewEmpCustomId('');
         setNewEmpName('');
         setNewEmpPhone('');
         setNewEmpPin('');
@@ -808,7 +870,8 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                           <th className="py-2.5 pr-4">Name</th>
                           <th className="py-2.5 pr-4">Role</th>
                           <th className="py-2.5 pr-4">Assigned Site</th>
-                          <th className="py-2.5">Status</th>
+                          <th className="py-2.5 pr-4">Status</th>
+                          <th className="py-2.5 text-right">Actions</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800">
@@ -818,7 +881,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                             <td className="py-3 pr-4 text-white font-medium">{emp.name}</td>
                             <td className="py-3 pr-4">{emp.role}</td>
                             <td className="py-3 pr-4 font-mono text-slate-400">{emp.siteId || 'Unassigned'}</td>
-                            <td className="py-3">
+                            <td className="py-3 pr-4">
                               <span
                                 className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
                                   emp.status === 'Active'
@@ -828,6 +891,15 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                               >
                                 {emp.status}
                               </span>
+                            </td>
+                            <td className="py-3 text-right">
+                              <button
+                                type="button"
+                                onClick={() => handleOpenEditEmp(emp)}
+                                className="px-2.5 py-1 text-xs font-medium text-blue-400 hover:text-white bg-blue-500/10 hover:bg-blue-600 rounded-lg border border-blue-500/20 transition-all cursor-pointer"
+                              >
+                                Edit
+                              </button>
                             </td>
                           </tr>
                         ))}
@@ -904,6 +976,22 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
             <form onSubmit={handleCreateEmployee} className="space-y-4">
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+                  Employee ID (Optional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="Leave blank for auto-ID (e.g. EMP001, EMP002...)"
+                  value={newEmpCustomId}
+                  onChange={(e) => setNewEmpCustomId(e.target.value.toUpperCase())}
+                  className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-slate-500"
+                />
+                <p className="mt-1 text-[11px] text-slate-400">
+                  Leave blank to auto-generate short sequential ID (e.g. <span className="text-blue-400 font-mono">EMP001</span>), or type custom number.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
                   Full Name
                 </label>
                 <input
@@ -958,6 +1046,108 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                   className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 shadow-lg shadow-blue-600/30 transition-all disabled:opacity-50 cursor-pointer"
                 >
                   {submittingModal ? 'Registering...' : 'Register Labourer'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Employee Modal */}
+      {editingEmp && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="glass-panel bg-slate-900 border border-slate-700 rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl">
+            <h3 className="text-lg font-bold text-white mb-1">Edit Employee Profile</h3>
+            <p className="text-xs text-slate-400 mb-5">
+              Change long or messy IDs (e.g. rename to <span className="text-blue-400 font-mono">EMP001</span>), edit name, or reset PIN.
+            </p>
+
+            <form onSubmit={handleUpdateEmployee} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+                  Employee ID
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. EMP001"
+                  value={editEmpId}
+                  onChange={(e) => setEditEmpId(e.target.value.toUpperCase())}
+                  className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <p className="mt-1 text-[11px] text-slate-400">
+                  Workers can enter this ID or simply their numbers (e.g. 1 or 001) to log in.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+                  Full Name
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editEmpName}
+                  onChange={(e) => setEditEmpName(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+                  Phone Number
+                </label>
+                <input
+                  type="tel"
+                  placeholder="+971501234567"
+                  value={editEmpPhone}
+                  onChange={(e) => setEditEmpPhone(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+                  Status
+                </label>
+                <select
+                  value={editEmpStatus}
+                  onChange={(e) => setEditEmpStatus(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="Active">Active</option>
+                  <option value="Inactive">Inactive</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+                  Reset PIN (Optional)
+                </label>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  placeholder="Leave blank to keep existing PIN"
+                  value={editEmpPin}
+                  onChange={(e) => setEditEmpPin(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm font-mono tracking-widest focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div className="flex gap-3 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setEditingEmp(null)}
+                  className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-slate-300 bg-slate-800 hover:bg-slate-700 border border-slate-700 transition-all cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingModal}
+                  className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 shadow-lg shadow-blue-600/30 transition-all disabled:opacity-50 cursor-pointer"
+                >
+                  {submittingModal ? 'Saving...' : 'Save Changes'}
                 </button>
               </div>
             </form>

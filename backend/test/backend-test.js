@@ -431,12 +431,34 @@ runTest('Admin can create a new employee with PBKDF2 hash (25,000 iter)', () => 
   const rawRes = Code.doPost(req);
   const res = (rawRes && typeof rawRes.getContent === 'function') ? JSON.parse(rawRes.getContent()) : rawRes;
   assert.strictEqual(res.success, true);
-  assert.ok(res.employeeId.startsWith('EMP'));
+  assert.ok(/^EMP\d{3,}$/.test(res.employeeId), 'Generated employee ID must be clean sequential EMP### format, got: ' + res.employeeId);
 
   // Test login for newly created employee with their PIN
   const loginRes = AuthService.login({ employeeId: res.employeeId, pin: '5912' });
   assert.strictEqual(loginRes.success, true);
   assert.strictEqual(loginRes.employee.name, 'Tariq Mahmoud');
+
+  // Test numeric shortcut login (e.g. typing just numeric digits '2' or '002' without 'EMP')
+  const numericPart = res.employeeId.replace(/^EMP/i, '');
+  const numericLoginRes = AuthService.login({ employeeId: numericPart, pin: '5912' });
+  assert.strictEqual(numericLoginRes.success, true, 'Worker must be able to log in with just their number: ' + numericPart);
+
+  // Test admin updateEmployee (renaming/customizing employee ID and details)
+  const updateReq = {
+    postData: {
+      contents: JSON.stringify({
+        action: 'updateEmployee',
+        currentId: res.employeeId,
+        newId: 'EMP099',
+        name: 'Tariq Mahmoud Updated',
+        token: adminToken
+      })
+    }
+  };
+  const rawUpdate = Code.doPost(updateReq);
+  const updateRes = (rawUpdate && typeof rawUpdate.getContent === 'function') ? JSON.parse(rawUpdate.getContent()) : rawUpdate;
+  assert.strictEqual(updateRes.success, true);
+  assert.strictEqual(updateRes.employeeId, 'EMP099');
 });
 
 runTest('Admin daily attendance report generates correctly', () => {

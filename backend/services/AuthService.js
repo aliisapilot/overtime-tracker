@@ -101,6 +101,15 @@ var AuthService = (function() {
       }
 
       var employee = _SheetsService.getEmployeeById(employeeId);
+      if (!employee && /^\d+$/.test(employeeId)) {
+        var paddedId = 'EMP' + ('000' + employeeId).slice(-3);
+        var fallbackEmployee = _SheetsService.getEmployeeById(paddedId);
+        if (fallbackEmployee) {
+          employee = fallbackEmployee;
+          employeeId = paddedId;
+        }
+      }
+
       if (!employee) {
         this.recordFailedAttempt(employeeId);
         this.logAuthEvent(employeeId, 'login', 'failed', 'Employee ID not found');

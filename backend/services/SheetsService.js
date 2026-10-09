@@ -460,7 +460,18 @@ var SheetsService = (function() {
   };
 
   SheetsServiceClass.prototype.generateEmployeeId = function() {
-    return this.generateId('EMP');
+    var employees = this.getAllEmployees();
+    var maxNum = 0;
+    employees.forEach(function(e) {
+      var match = String(e.ID || '').match(/^EMP(\d+)$/i);
+      if (match) {
+        var num = parseInt(match[1], 10);
+        if (num > maxNum) maxNum = num;
+      }
+    });
+    var nextNum = maxNum + 1;
+    var padded = nextNum < 1000 ? ('000' + nextNum).slice(-3) : String(nextNum);
+    return 'EMP' + padded;
   };
 
   SheetsServiceClass.prototype.generateSiteId = function() {
