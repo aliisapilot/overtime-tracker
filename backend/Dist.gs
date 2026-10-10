@@ -2,7 +2,7 @@
  * OVERTIME TRACKER — COMPLETE GOOGLE APPS SCRIPT BACKEND
  * Bundled for single-file deployment at script.google.com
  * Owner: Ateeb
- * Generated: 2026-10-10T19:48:46.352Z
+ * Generated: 2026-10-10T20:25:10.327Z
  */
 
 
@@ -394,6 +394,7 @@ var _CryptoUtils = (typeof CryptoUtils !== 'undefined')
 var SheetsService = (function() {
   function SheetsServiceClass() {
     this._mockData = null; // Used for local Node tests
+    this._rowCache = {};   // Per-request in-memory cache: { sheetName: rows[] }
   }
 
   /**
@@ -650,6 +651,7 @@ var SheetsService = (function() {
 
   /**
    * Get all rows from a sheet as plain objects
+   * Uses an in-request cache to avoid multiple full-sheet reads per GAS execution.
    * @param {string} sheetName
    * @returns {Object[]}
    */
@@ -658,13 +660,21 @@ var SheetsService = (function() {
       return this._mockData[sheetName];
     }
 
+    // Return cached rows if already loaded during this GAS execution
+    if (this._rowCache[sheetName]) {
+      return this._rowCache[sheetName];
+    }
+
     var sheet = this.getOrCreateSheet(sheetName);
     if (!sheet) return [];
     var data = sheet.getDataRange().getValues();
-    if (data.length <= 1) return [];
+    if (data.length <= 1) {
+      this._rowCache[sheetName] = [];
+      return this._rowCache[sheetName];
+    }
 
     var headers = data[0];
-    return data.slice(1).map(function(row) {
+    this._rowCache[sheetName] = data.slice(1).map(function(row) {
       var obj = {};
       headers.forEach(function(header, i) {
         if (header) {
@@ -673,6 +683,15 @@ var SheetsService = (function() {
       });
       return obj;
     });
+    return this._rowCache[sheetName];
+  };
+
+  /**
+   * Invalidate the in-request cache for a sheet after a write
+   * @param {string} sheetName
+   */
+  SheetsServiceClass.prototype._invalidateCache = function(sheetName) {
+    delete this._rowCache[sheetName];
   };
 
   /**
@@ -704,7 +723,9 @@ var SheetsService = (function() {
     var rowData = headers.map(function(h) { return data[h] !== undefined ? data[h] : ''; });
     var newRow = sheet.getLastRow() + 1;
     sheet.getRange(newRow, 1, 1, rowData.length).setValues([rowData]);
-    return this.findById(sheetName, data.ID);
+    // Invalidate cache so subsequent reads within this request see the new row
+    this._invalidateCache(sheetName);
+    return data;
   };
 
   /**
@@ -737,6 +758,8 @@ var SheetsService = (function() {
           return data[h] !== undefined ? data[h] : values[i][headers.indexOf(h)];
         });
         sheet.getRange(i + 1, 1, 1, rowData.length).setValues([rowData]);
+        // Invalidate cache for this sheet after write
+        this._invalidateCache(sheetName);
         return true;
       }
     }
@@ -1385,6 +1408,81 @@ var ShiftService = (function() {
   ShiftServiceClass.prototype.getEmployeeShifts = function(employeeId) {
     var all = _SheetsService.getAllShifts();
     return all.filter(function(s) { return s['Employee ID'] === employeeId; });
+  };
+
+  /**
+   * Get combined dashboard data for a labourer in a single GAS call.
+   * Returns employee profile, job site details, all shifts, and the active shift.
+   * Leverages the in-request sheet cache so Employees, Job Sites, and Shifts are
+   * each read from Google Sheets at most once per request.
+   * @param {Object} params - { employeeId }
+   * @returns {Object}
+   */
+  ShiftServiceClass.prototype.getDashboardData = function(params) {
+    try {
+      var employeeId = (params.employeeId || '').trim().toUpperCase();
+      if (!employeeId) {
+        return { success: false, message: 'Employee ID is required' };
+      }
+
+      // Single read of Employees sheet (cached for subsequent lookups)
+      var employee = _SheetsService.getEmployeeById(employeeId);
+      if (!employee) {
+        return { success: false, message: 'Employee not found' };
+      }
+
+      var siteId = (employee['Site ID'] || employee.SiteID || '').toString().trim();
+      // Single read of Job Sites sheet (cached)
+      var site = siteId ? _SheetsService.getJobSiteById(siteId) : null;
+
+      var employeeProfile = {
+        id: employee.ID,
+        name: employee.Name,
+        phone: employee.Phone || '',
+        role: employee.Role || 'Labourer',
+        siteId: siteId,
+        siteName: site ? site.Name : (siteId ? 'Unknown Site (' + siteId + ')' : 'Unassigned'),
+        siteLat: site ? parseFloat(site.Latitude) : null,
+        siteLon: site ? parseFloat(site.Longitude) : null,
+        geofenceRadius: site
+          ? parseFloat(site['Geofence Radius'] || site.GeofenceRadius || _CONFIG.DEFAULT_GEOFENCE_RADIUS || 100)
+          : (_CONFIG.DEFAULT_GEOFENCE_RADIUS || 100),
+        status: employee.Status
+      };
+
+      // Single read of Shifts sheet (cached)
+      var allShifts = _SheetsService.getAllShifts();
+      var employeeShifts = allShifts.filter(function(s) {
+        return String(s['Employee ID']) === employeeId;
+      });
+
+      var activeShift = null;
+      for (var i = 0; i < employeeShifts.length; i++) {
+        if (employeeShifts[i].Status === 'Active') {
+          activeShift = employeeShifts[i];
+          break;
+        }
+      }
+
+      return {
+        success: true,
+        employee: employeeProfile,
+        jobSite: site ? {
+          id: site.ID,
+          name: site.Name,
+          address: site.Address || '',
+          lat: parseFloat(site.Latitude),
+          lon: parseFloat(site.Longitude),
+          geofenceRadius: parseFloat(site['Geofence Radius'] || site.GeofenceRadius || _CONFIG.DEFAULT_GEOFENCE_RADIUS || 100),
+          status: site.Status
+        } : null,
+        shifts: employeeShifts,
+        activeShift: activeShift
+      };
+    } catch (err) {
+      if (typeof Logger !== 'undefined') Logger.log('getDashboardData error: ' + err);
+      return { success: false, message: 'Failed to load dashboard data: ' + (err.message || err) };
+    }
   };
 
   return new ShiftServiceClass();
@@ -2348,26 +2446,31 @@ var AuthService = (function() {
       // Successful PIN verification: clear failure counter
       this.clearFailedAttempts(employeeId);
 
-      // Upgrade hash to PBKDF2 if it was verified via legacy algorithm
+      var siteId = employee['Site ID'] || employee.SiteID || '';
+      var role = employee.Role || _CONFIG.LABOURER_ROLE || 'Labourer';
+
+      // Upgrade hash or record Last Accessed in a single write
       if (verifyResult.shouldUpgrade) {
         try {
           var newPbkdf2Hash = _CryptoUtils.hashPin(pin);
           _SheetsService.updateRow(_SHEETS.EMPLOYEES, employeeId, {
-            'PIN Hash': newPbkdf2Hash
+            'PIN Hash': newPbkdf2Hash,
+            'Last Accessed': new Date().toISOString()
           });
         } catch (upgradeErr) {
-          // Non-fatal
+          // Non-fatal — still record Last Accessed below
+          _SheetsService.updateRow(_SHEETS.EMPLOYEES, employeeId, {
+            'Last Accessed': new Date().toISOString()
+          });
         }
+      } else {
+        // Record last accessed timestamp (single write)
+        _SheetsService.updateRow(_SHEETS.EMPLOYEES, employeeId, {
+          'Last Accessed': new Date().toISOString()
+        });
       }
 
-      // Record last accessed timestamp
-      _SheetsService.updateRow(_SHEETS.EMPLOYEES, employeeId, {
-        'Last Accessed': new Date().toISOString()
-      });
-
       // Issue signed session token
-      var siteId = employee['Site ID'] || employee.SiteID || '';
-      var role = employee.Role || _CONFIG.LABOURER_ROLE || 'Labourer';
       var token = _CryptoUtils.createSessionToken({
         employeeId: employee.ID,
         name: employee.Name,
@@ -2375,11 +2478,10 @@ var AuthService = (function() {
         siteId: siteId
       });
 
-      this.logAuthEvent(employeeId, 'login', 'success', 'Successful login (' + role + ')');
-
+      // Fetch site details (uses cached Employees read from earlier - only fetches Job Sites once)
       var site = siteId ? _SheetsService.getJobSiteById(siteId) : null;
 
-      return {
+      var result = {
         success: true,
         token: token,
         employee: {
@@ -2394,6 +2496,11 @@ var AuthService = (function() {
           geofenceRadius: site ? parseFloat(site['Geofence Radius'] || site.GeofenceRadius || _CONFIG.DEFAULT_GEOFENCE_RADIUS) : 100
         }
       };
+
+      // Audit log is non-critical — written after response is assembled
+      this.logAuthEvent(employeeId, 'login', 'success', 'Successful login (' + role + ')');
+
+      return result;
     } catch (error) {
       if (typeof Logger !== 'undefined') Logger.log('Login error: ' + error);
       return { success: false, message: 'Authentication service error: ' + (error.message || error) };
@@ -2674,6 +2781,14 @@ function doPost(e) {
         }
         params.employeeId = params.employeeId || session.employeeId;
         return jsonResponse(_AuthService.getEmployeeData(params));
+
+      case 'getDashboardData':
+        // Combined endpoint: employee profile + job site + shifts in one call
+        if (!isAdmin && params.employeeId && params.employeeId.toUpperCase() !== session.employeeId.toUpperCase()) {
+          return jsonResponse({ success: false, code: 403, message: 'Forbidden: You cannot view data of another employee' });
+        }
+        params.employeeId = params.employeeId || session.employeeId;
+        return jsonResponse(_ShiftService.getDashboardData(params));
 
       case 'startShift':
         if (!isAdmin) {

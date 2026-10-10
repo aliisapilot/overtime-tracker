@@ -145,26 +145,31 @@ var AuthService = (function() {
       // Successful PIN verification: clear failure counter
       this.clearFailedAttempts(employeeId);
 
-      // Upgrade hash to PBKDF2 if it was verified via legacy algorithm
+      var siteId = employee['Site ID'] || employee.SiteID || '';
+      var role = employee.Role || _CONFIG.LABOURER_ROLE || 'Labourer';
+
+      // Upgrade hash or record Last Accessed in a single write
       if (verifyResult.shouldUpgrade) {
         try {
           var newPbkdf2Hash = _CryptoUtils.hashPin(pin);
           _SheetsService.updateRow(_SHEETS.EMPLOYEES, employeeId, {
-            'PIN Hash': newPbkdf2Hash
+            'PIN Hash': newPbkdf2Hash,
+            'Last Accessed': new Date().toISOString()
           });
         } catch (upgradeErr) {
-          // Non-fatal
+          // Non-fatal — still record Last Accessed below
+          _SheetsService.updateRow(_SHEETS.EMPLOYEES, employeeId, {
+            'Last Accessed': new Date().toISOString()
+          });
         }
+      } else {
+        // Record last accessed timestamp (single write)
+        _SheetsService.updateRow(_SHEETS.EMPLOYEES, employeeId, {
+          'Last Accessed': new Date().toISOString()
+        });
       }
 
-      // Record last accessed timestamp
-      _SheetsService.updateRow(_SHEETS.EMPLOYEES, employeeId, {
-        'Last Accessed': new Date().toISOString()
-      });
-
       // Issue signed session token
-      var siteId = employee['Site ID'] || employee.SiteID || '';
-      var role = employee.Role || _CONFIG.LABOURER_ROLE || 'Labourer';
       var token = _CryptoUtils.createSessionToken({
         employeeId: employee.ID,
         name: employee.Name,
@@ -172,11 +177,10 @@ var AuthService = (function() {
         siteId: siteId
       });
 
-      this.logAuthEvent(employeeId, 'login', 'success', 'Successful login (' + role + ')');
-
+      // Fetch site details (uses cached Employees read from earlier - only fetches Job Sites once)
       var site = siteId ? _SheetsService.getJobSiteById(siteId) : null;
 
-      return {
+      var result = {
         success: true,
         token: token,
         employee: {
@@ -191,6 +195,11 @@ var AuthService = (function() {
           geofenceRadius: site ? parseFloat(site['Geofence Radius'] || site.GeofenceRadius || _CONFIG.DEFAULT_GEOFENCE_RADIUS) : 100
         }
       };
+
+      // Audit log is non-critical — written after response is assembled
+      this.logAuthEvent(employeeId, 'login', 'success', 'Successful login (' + role + ')');
+
+      return result;
     } catch (error) {
       if (typeof Logger !== 'undefined') Logger.log('Login error: ' + error);
       return { success: false, message: 'Authentication service error: ' + (error.message || error) };

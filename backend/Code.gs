@@ -94,6 +94,14 @@ function doPost(e) {
         params.employeeId = params.employeeId || session.employeeId;
         return jsonResponse(_AuthService.getEmployeeData(params));
 
+      case 'getDashboardData':
+        // Combined endpoint: employee profile + job site + shifts in one call
+        if (!isAdmin && params.employeeId && params.employeeId.toUpperCase() !== session.employeeId.toUpperCase()) {
+          return jsonResponse({ success: false, code: 403, message: 'Forbidden: You cannot view data of another employee' });
+        }
+        params.employeeId = params.employeeId || session.employeeId;
+        return jsonResponse(_ShiftService.getDashboardData(params));
+
       case 'startShift':
         if (!isAdmin) {
           params.employeeId = session.employeeId; // Force self

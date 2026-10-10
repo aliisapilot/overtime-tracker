@@ -18,6 +18,7 @@ var _CryptoUtils = (typeof CryptoUtils !== 'undefined')
 var SheetsService = (function() {
   function SheetsServiceClass() {
     this._mockData = null; // Used for local Node tests
+    this._rowCache = {};   // Per-request in-memory cache: { sheetName: rows[] }
   }
 
   /**
@@ -274,6 +275,7 @@ var SheetsService = (function() {
 
   /**
    * Get all rows from a sheet as plain objects
+   * Uses an in-request cache to avoid multiple full-sheet reads per GAS execution.
    * @param {string} sheetName
    * @returns {Object[]}
    */
@@ -282,13 +284,21 @@ var SheetsService = (function() {
       return this._mockData[sheetName];
     }
 
+    // Return cached rows if already loaded during this GAS execution
+    if (this._rowCache[sheetName]) {
+      return this._rowCache[sheetName];
+    }
+
     var sheet = this.getOrCreateSheet(sheetName);
     if (!sheet) return [];
     var data = sheet.getDataRange().getValues();
-    if (data.length <= 1) return [];
+    if (data.length <= 1) {
+      this._rowCache[sheetName] = [];
+      return this._rowCache[sheetName];
+    }
 
     var headers = data[0];
-    return data.slice(1).map(function(row) {
+    this._rowCache[sheetName] = data.slice(1).map(function(row) {
       var obj = {};
       headers.forEach(function(header, i) {
         if (header) {
@@ -297,6 +307,15 @@ var SheetsService = (function() {
       });
       return obj;
     });
+    return this._rowCache[sheetName];
+  };
+
+  /**
+   * Invalidate the in-request cache for a sheet after a write
+   * @param {string} sheetName
+   */
+  SheetsServiceClass.prototype._invalidateCache = function(sheetName) {
+    delete this._rowCache[sheetName];
   };
 
   /**
@@ -328,7 +347,9 @@ var SheetsService = (function() {
     var rowData = headers.map(function(h) { return data[h] !== undefined ? data[h] : ''; });
     var newRow = sheet.getLastRow() + 1;
     sheet.getRange(newRow, 1, 1, rowData.length).setValues([rowData]);
-    return this.findById(sheetName, data.ID);
+    // Invalidate cache so subsequent reads within this request see the new row
+    this._invalidateCache(sheetName);
+    return data;
   };
 
   /**
@@ -361,6 +382,8 @@ var SheetsService = (function() {
           return data[h] !== undefined ? data[h] : values[i][headers.indexOf(h)];
         });
         sheet.getRange(i + 1, 1, 1, rowData.length).setValues([rowData]);
+        // Invalidate cache for this sheet after write
+        this._invalidateCache(sheetName);
         return true;
       }
     }

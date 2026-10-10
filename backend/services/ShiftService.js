@@ -347,6 +347,81 @@ var ShiftService = (function() {
     return all.filter(function(s) { return s['Employee ID'] === employeeId; });
   };
 
+  /**
+   * Get combined dashboard data for a labourer in a single GAS call.
+   * Returns employee profile, job site details, all shifts, and the active shift.
+   * Leverages the in-request sheet cache so Employees, Job Sites, and Shifts are
+   * each read from Google Sheets at most once per request.
+   * @param {Object} params - { employeeId }
+   * @returns {Object}
+   */
+  ShiftServiceClass.prototype.getDashboardData = function(params) {
+    try {
+      var employeeId = (params.employeeId || '').trim().toUpperCase();
+      if (!employeeId) {
+        return { success: false, message: 'Employee ID is required' };
+      }
+
+      // Single read of Employees sheet (cached for subsequent lookups)
+      var employee = _SheetsService.getEmployeeById(employeeId);
+      if (!employee) {
+        return { success: false, message: 'Employee not found' };
+      }
+
+      var siteId = (employee['Site ID'] || employee.SiteID || '').toString().trim();
+      // Single read of Job Sites sheet (cached)
+      var site = siteId ? _SheetsService.getJobSiteById(siteId) : null;
+
+      var employeeProfile = {
+        id: employee.ID,
+        name: employee.Name,
+        phone: employee.Phone || '',
+        role: employee.Role || 'Labourer',
+        siteId: siteId,
+        siteName: site ? site.Name : (siteId ? 'Unknown Site (' + siteId + ')' : 'Unassigned'),
+        siteLat: site ? parseFloat(site.Latitude) : null,
+        siteLon: site ? parseFloat(site.Longitude) : null,
+        geofenceRadius: site
+          ? parseFloat(site['Geofence Radius'] || site.GeofenceRadius || _CONFIG.DEFAULT_GEOFENCE_RADIUS || 100)
+          : (_CONFIG.DEFAULT_GEOFENCE_RADIUS || 100),
+        status: employee.Status
+      };
+
+      // Single read of Shifts sheet (cached)
+      var allShifts = _SheetsService.getAllShifts();
+      var employeeShifts = allShifts.filter(function(s) {
+        return String(s['Employee ID']) === employeeId;
+      });
+
+      var activeShift = null;
+      for (var i = 0; i < employeeShifts.length; i++) {
+        if (employeeShifts[i].Status === 'Active') {
+          activeShift = employeeShifts[i];
+          break;
+        }
+      }
+
+      return {
+        success: true,
+        employee: employeeProfile,
+        jobSite: site ? {
+          id: site.ID,
+          name: site.Name,
+          address: site.Address || '',
+          lat: parseFloat(site.Latitude),
+          lon: parseFloat(site.Longitude),
+          geofenceRadius: parseFloat(site['Geofence Radius'] || site.GeofenceRadius || _CONFIG.DEFAULT_GEOFENCE_RADIUS || 100),
+          status: site.Status
+        } : null,
+        shifts: employeeShifts,
+        activeShift: activeShift
+      };
+    } catch (err) {
+      if (typeof Logger !== 'undefined') Logger.log('getDashboardData error: ' + err);
+      return { success: false, message: 'Failed to load dashboard data: ' + (err.message || err) };
+    }
+  };
+
   return new ShiftServiceClass();
 })();
 

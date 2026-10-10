@@ -4,8 +4,8 @@ import {
   UserSession,
   ShiftRecord,
   EmployeeProfile,
-  getEmployeeData,
-  getEmployeeShifts,
+  DashboardResponse,
+  getDashboardData,
   startShift,
   endShift,
 } from '@/lib/api';
@@ -70,25 +70,19 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
     : null;
   const isInsideGeofence = distanceMeters != null ? distanceMeters <= geofenceRadius : false;
 
-  // Load employee profile & active shifts
+  // Load employee profile & active shifts — single GAS round-trip
   const loadData = useCallback(async () => {
     setLoadingData(true);
     try {
-      const [empRes, shiftsRes] = await Promise.all([
-        getEmployeeData(session.token, session.employee.id),
-        getEmployeeShifts(session.token, session.employee.id),
-      ]);
-
-      if (shiftsRes.success && Array.isArray(shiftsRes.shifts)) {
-        setShifts(shiftsRes.shifts);
-        // Look for active shift (Status === 'Active' or missing End Time)
-        const currentActive = shiftsRes.shifts.find(
-          (s) => s.Status === 'Active' || (!s['End Time'] && s.Status !== 'Completed')
-        );
-        setActiveShift(currentActive || null);
-      }
-      if (empRes.success && empRes.employee) {
-        setEmployeeProfile(empRes.employee as EmployeeProfile);
+      const res: DashboardResponse = await getDashboardData(session.token, session.employee.id);
+      if (res.success) {
+        if (res.employee) {
+          setEmployeeProfile(res.employee);
+        }
+        if (Array.isArray(res.shifts)) {
+          setShifts(res.shifts);
+          setActiveShift(res.activeShift ?? null);
+        }
       }
     } catch (err: unknown) {
       console.error('Failed to load dashboard data:', err);
@@ -96,6 +90,7 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
       setLoadingData(false);
     }
   }, [session.token, session.employee.id]);
+
 
   // GPS Acquisition
   const acquireGps = useCallback(async () => {
@@ -172,10 +167,31 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
         accuracy: Math.round(currentGps.accuracy),
       });
 
-      if (res.success) {
+      if (res.success && res.data?.shiftId) {
+        // Update state optimistically from the response — no extra GAS round-trip needed
+        const newShift: ShiftRecord = {
+          ID: res.data.shiftId,
+          'Employee ID': session.employee.id,
+          'Site ID': assignedSiteId,
+          'Start Time': new Date().toISOString(),
+          'Start Latitude': currentGps.lat,
+          'Start Longitude': currentGps.lon,
+          'Start Accuracy': Math.round(currentGps.accuracy),
+          'Break Minutes': 60,
+          Status: 'Active',
+          'Created At': new Date().toISOString(),
+        };
+        setActiveShift(newShift);
+        setShifts((prev) => [newShift, ...prev]);
         setActionMessage({
           type: 'success',
           text: `Shift started successfully at ${employeeProfile.siteName || assignedSiteId}! Location recorded at ${currentGps.lat.toFixed(5)}, ${currentGps.lon.toFixed(5)}.`,
+        });
+      } else if (res.success) {
+        // Fallback: refresh from server if response didn't include shiftId
+        setActionMessage({
+          type: 'success',
+          text: `Shift started successfully at ${employeeProfile.siteName || assignedSiteId}!`,
         });
         await loadData();
       } else {
@@ -218,12 +234,29 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
       );
 
       if (res.success) {
-        const otText = res.overtimeHours ? ` (${res.overtimeHours} hrs overtime submitted for review)` : '';
+        const otText = res.data?.overtimeHours ? ` (${res.data.overtimeHours} hrs overtime submitted for review)` : '';
+        // Update state optimistically — mark the active shift as Completed without re-fetching
+        if (activeShift) {
+          const completedShift: ShiftRecord = {
+            ...activeShift,
+            'End Time': new Date().toISOString(),
+            'End Latitude': currentGps.lat,
+            'End Longitude': currentGps.lon,
+            'End Accuracy': Math.round(currentGps.accuracy),
+            'Regular Hours': 0,       // Will be accurate on next loadData
+            'Overtime Hours': res.data?.overtimeHours ?? 0,
+            Status: 'Completed',
+          };
+          setShifts((prev) => prev.map((s) => s.ID === activeShift.ID ? completedShift : s));
+          setActiveShift(null);
+        } else {
+          await loadData();
+        }
+
         setActionMessage({
           type: 'success',
           text: `Shift ended! Clock-out location recorded at ${currentGps.lat.toFixed(5)}, ${currentGps.lon.toFixed(5)}.${otText}`,
         });
-        await loadData();
       } else {
         setActionMessage({ type: 'error', text: res.message || 'Failed to end shift.' });
       }

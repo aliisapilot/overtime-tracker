@@ -382,6 +382,27 @@ export async function getEmployeeData(token: string, employeeId?: string): Promi
   });
 }
 
+export interface DashboardResponse extends ApiResponse {
+  employee?: EmployeeProfile;
+  jobSite?: JobSite;
+  shifts?: ShiftRecord[];
+  activeShift?: ShiftRecord | null;
+}
+
+/**
+ * Fetch combined dashboard data in one GAS call:
+ * employee profile + job site + all shifts + active shift
+ * Eliminates two parallel requests on labourer dashboard load.
+ */
+export async function getDashboardData(token: string, employeeId?: string): Promise<DashboardResponse> {
+  const res = await sendGasRequest<Record<string, unknown>>({
+    action: 'getDashboardData',
+    token,
+    employeeId,
+  });
+  return res as unknown as DashboardResponse;
+}
+
 /**
  * Admin: Get Job Sites
  */
