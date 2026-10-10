@@ -1,0 +1,28 @@
+name: Frontend checks
+on:
+  pull_request:
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/frontend-checks.yml'
+  push:
+    branches:
+      - 'perf/lazy-audit-logs'
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/frontend-checks.yml'
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      # This repository currently has no committed frontend/package-lock.json.
+      - run: npm install --no-audit --no-fund
+      - run: npx tsc --noEmit
+      - run: npm run lint
+      - run: npm run build
