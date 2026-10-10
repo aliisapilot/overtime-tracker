@@ -325,11 +325,10 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
 
   const loadAllData = useCallback(async () => {
     try {
-      const [empRes, otRes, attRes, auditRes, sitesRes] = await Promise.all([
+      const [empRes, otRes, attRes, sitesRes] = await Promise.all([
         getEmployees(session.token),
         getPendingOvertime(session.token),
         getAttendance(session.token),
-        getAuditLogs(session.token, 20),
         getJobSites(session.token),
       ]);
 
@@ -341,9 +340,6 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
       }
       if (attRes.success && Array.isArray(attRes.attendance)) {
         setAttendanceList(attRes.attendance as AttendanceItem[]);
-      }
-      if (auditRes.success && Array.isArray(auditRes.logs)) {
-        setAuditLogs(auditRes.logs as AuditLogItem[]);
       }
       if (sitesRes.success && Array.isArray(sitesRes.sites)) {
         setJobSites(sitesRes.sites);
@@ -359,6 +355,23 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
   useEffect(() => {
     loadAllData();
   }, [loadAllData]);
+
+  // Audit history is not needed for initial dashboard rendering.
+  // Load it only when Ateeb opens the audit tab.
+  useEffect(() => {
+    if (activeTab !== 'audit') return;
+    let cancelled = false;
+    getAuditLogs(session.token, 20)
+      .then((res) => {
+        if (!cancelled && res.success && Array.isArray(res.logs)) {
+          setAuditLogs(res.logs as AuditLogItem[]);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) console.error('Failed to load audit logs:', err);
+      });
+    return () => { cancelled = true; };
+  }, [activeTab, session.token]);
 
   useEffect(() => {
     if (activeTab === 'reports' && !dailyReport) {
