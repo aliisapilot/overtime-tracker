@@ -325,11 +325,11 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
 
   const loadAllData = useCallback(async () => {
     try {
-      const [empRes, otRes, attRes, sitesRes] = await Promise.all([
+      // Render the dashboard after the initial workforce and overtime requests.
+      // Attendance and site data continue loading independently.
+      const [empRes, otRes] = await Promise.all([
         getEmployees(session.token),
         getPendingOvertime(session.token),
-        getAttendance(session.token),
-        getJobSites(session.token),
       ]);
 
       if (empRes.success && Array.isArray(empRes.employees)) {
@@ -338,12 +338,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
       if (otRes.success && Array.isArray(otRes.overtime)) {
         setOvertimeList(otRes.overtime as OvertimeItem[]);
       }
-      if (attRes.success && Array.isArray(attRes.attendance)) {
-        setAttendanceList(attRes.attendance as AttendanceItem[]);
-      }
-      if (sitesRes.success && Array.isArray(sitesRes.sites)) {
-        setJobSites(sitesRes.sites);
-      }
+
     } catch (err: unknown) {
       console.error('Failed to load admin data:', err);
     } finally {
@@ -355,6 +350,32 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
   useEffect(() => {
     loadAllData();
   }, [loadAllData]);
+
+  // Reference data is fetched independently of the initial dashboard request.
+  // Keep job sites available for employee assignment without blocking first paint.
+  useEffect(() => {
+    let cancelled = false;
+    getJobSites(session.token)
+      .then((res) => {
+        if (!cancelled && res.success && Array.isArray(res.sites)) setJobSites(res.sites);
+      })
+      .catch((err) => { if (!cancelled) console.error('Failed to load job sites:', err); });
+    return () => { cancelled = true; };
+  }, [session.token]);
+
+  // Attendance can be expensive as the ledger grows. Load it on demand.
+  useEffect(() => {
+    if (activeTab !== 'attendance') return;
+    let cancelled = false;
+    getAttendance(session.token)
+      .then((res) => {
+        if (!cancelled && res.success && Array.isArray(res.attendance)) {
+          setAttendanceList(res.attendance as AttendanceItem[]);
+        }
+      })
+      .catch((err) => { if (!cancelled) console.error('Failed to load attendance:', err); });
+    return () => { cancelled = true; };
+  }, [activeTab, session.token]);
 
   // Audit history is not needed for initial dashboard rendering.
   // Load it only when Ateeb opens the audit tab.
