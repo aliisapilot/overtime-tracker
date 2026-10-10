@@ -1,7 +1,7 @@
 # Project Status
 
-**Last Updated**: 2026-10-10
-**Version**: 1.6.0 (First-Attempt Login Reliability Fix, Progressive Cold-Start UX, Safe Diagnostics, Bounded Network Retries)
+**Last Updated**: 2026-10-11
+**Version**: 1.7.0 (Employee Job Site Assignment & Geofence Verification Workflow, Admin Site Management, Production Cloudflare Deployment)
 
 ---
 
