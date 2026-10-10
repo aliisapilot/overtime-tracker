@@ -84,6 +84,8 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
   const [activeTab, setActiveTab] = useState<'overtime' | 'attendance' | 'reports' | 'employees' | 'sites' | 'audit'>('overtime');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const [attendanceLoaded, setAttendanceLoaded] = useState(false);
   const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // Reports state
@@ -325,18 +327,10 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
 
   const loadAllData = useCallback(async () => {
     try {
-      // Render the dashboard after the initial workforce and overtime requests.
-      // Attendance and site data continue loading independently.
-      const [empRes, otRes] = await Promise.all([
-        getEmployees(session.token),
-        getPendingOvertime(session.token),
-      ]);
-
+      // Do not let a slow overtime request delay workforce display.
+      const empRes = await getEmployees(session.token);
       if (empRes.success && Array.isArray(empRes.employees)) {
         setEmployees(empRes.employees);
-      }
-      if (otRes.success && Array.isArray(otRes.overtime)) {
-        setOvertimeList(otRes.overtime as OvertimeItem[]);
       }
 
     } catch (err: unknown) {
@@ -349,7 +343,19 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
 
   useEffect(() => {
     loadAllData();
-  }, [loadAllData]);
+  }, [loadAllData, refreshVersion]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getPendingOvertime(session.token)
+      .then((res) => {
+        if (!cancelled && res.success && Array.isArray(res.overtime)) {
+          setOvertimeList(res.overtime as OvertimeItem[]);
+        }
+      })
+      .catch((err) => { if (!cancelled) console.error('Failed to load overtime:', err); });
+    return () => { cancelled = true; };
+  }, [session.token, refreshVersion]);
 
   // Reference data is fetched independently of the initial dashboard request.
   // Keep job sites available for employee assignment without blocking first paint.
@@ -361,21 +367,23 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
       })
       .catch((err) => { if (!cancelled) console.error('Failed to load job sites:', err); });
     return () => { cancelled = true; };
-  }, [session.token]);
+  }, [session.token, refreshVersion]);
 
-  // Attendance can be expensive as the ledger grows. Load it on demand.
+  // Load attendance independently so summary counts remain correct,
+  // without holding the entire admin dashboard behind this request.
   useEffect(() => {
-    if (activeTab !== 'attendance') return;
     let cancelled = false;
+    setAttendanceLoaded(false);
     getAttendance(session.token)
       .then((res) => {
         if (!cancelled && res.success && Array.isArray(res.attendance)) {
           setAttendanceList(res.attendance as AttendanceItem[]);
+          setAttendanceLoaded(true);
         }
       })
       .catch((err) => { if (!cancelled) console.error('Failed to load attendance:', err); });
     return () => { cancelled = true; };
-  }, [activeTab, session.token]);
+  }, [session.token, refreshVersion]);
 
   // Audit history is not needed for initial dashboard rendering.
   // Load it only when Ateeb opens the audit tab.
@@ -392,7 +400,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
         if (!cancelled) console.error('Failed to load audit logs:', err);
       });
     return () => { cancelled = true; };
-  }, [activeTab, session.token]);
+  }, [activeTab, session.token, refreshVersion]);
 
   useEffect(() => {
     if (activeTab === 'reports' && !dailyReport) {
@@ -402,7 +410,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
 
   const handleRefresh = () => {
     setRefreshing(true);
-    loadAllData();
+    setRefreshVersion((v) => v + 1);
   };
 
   const handleApproveOvertime = async (otId: string) => {
@@ -487,7 +495,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
         <div className="glass-card rounded-2xl p-4 border-emerald-500/20 bg-emerald-500/5">
           <span className="text-xs font-medium text-emerald-400 block mb-1">Clocked-In Now</span>
           <span className="text-2xl font-bold text-emerald-300 font-mono">
-            {attendanceList.filter((a) => (a.Status || a.status) === 'Active' || !(a['End Time'] || a.endTime)).length}
+            {attendanceLoaded ? attendanceList.filter((a) => (a.Status || a.status) === 'Active' || !(a['End Time'] || a.endTime)).length : '…'}
           </span>
         </div>
         <div className="glass-card rounded-2xl p-4 border-amber-500/30 bg-amber-500/5">
@@ -496,7 +504,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
         </div>
         <div className="glass-card rounded-2xl p-4">
           <span className="text-xs font-medium text-slate-400 block mb-1">Today's Shifts</span>
-          <span className="text-2xl font-bold text-blue-400 font-mono">{attendanceList.length}</span>
+          <span className="text-2xl font-bold text-blue-400 font-mono">{attendanceLoaded ? attendanceList.length : '…'}</span>
         </div>
       </div>
 
