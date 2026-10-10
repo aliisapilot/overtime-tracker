@@ -228,7 +228,7 @@ var AuthService = (function() {
         return { success: false, message: 'Employee not found' };
       }
 
-      var siteId = employee['Site ID'] || employee.SiteID;
+      var siteId = employee['Site ID'] || employee.SiteID || employee.siteId || '';
       var site = siteId ? _SheetsService.getJobSiteById(siteId) : null;
 
       return {
@@ -239,12 +239,21 @@ var AuthService = (function() {
           phone: employee.Phone,
           role: employee.Role,
           siteId: siteId,
-          siteName: site ? site.Name : 'Unassigned',
+          siteName: site ? site.Name : (siteId ? 'Unknown Site (' + siteId + ')' : 'Unassigned'),
           siteLat: site ? parseFloat(site.Latitude) : null,
           siteLon: site ? parseFloat(site.Longitude) : null,
           geofenceRadius: site ? parseFloat(site['Geofence Radius'] || site.GeofenceRadius || _CONFIG.DEFAULT_GEOFENCE_RADIUS) : 100,
           status: employee.Status
-        }
+        },
+        jobSite: site ? {
+          id: site.ID,
+          name: site.Name,
+          address: site.Address || '',
+          lat: parseFloat(site.Latitude),
+          lon: parseFloat(site.Longitude),
+          geofenceRadius: parseFloat(site['Geofence Radius'] || site.GeofenceRadius || _CONFIG.DEFAULT_GEOFENCE_RADIUS || 100),
+          status: site.Status
+        } : null
       };
     } catch (error) {
       return { success: false, message: 'Failed to fetch employee details' };

@@ -4,6 +4,7 @@ import {
   JobSite,
   EmployeeProfile,
   getEmployees,
+  getJobSites,
   createEmployee,
   updateEmployee,
   getAttendance,
@@ -13,6 +14,7 @@ import {
   generateDailyReport,
 } from '@/lib/api';
 import ChangePinModal from '@/components/ChangePinModal';
+import JobSiteModal from '@/components/JobSiteModal';
 
 interface DailyReportData {
   date: string;
@@ -79,7 +81,7 @@ interface AuditLogItem {
 }
 
 export default function AdminDashboard({ session, onLogout }: AdminDashboardProps) {
-  const [activeTab, setActiveTab] = useState<'overtime' | 'attendance' | 'reports' | 'employees' | 'audit'>('overtime');
+  const [activeTab, setActiveTab] = useState<'overtime' | 'attendance' | 'reports' | 'employees' | 'sites' | 'audit'>('overtime');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -91,6 +93,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
 
   // Data states
   const [employees, setEmployees] = useState<EmployeeProfile[]>([]);
+  const [jobSites, setJobSites] = useState<JobSite[]>([]);
   const [overtimeList, setOvertimeList] = useState<OvertimeItem[]>([]);
   const [attendanceList, setAttendanceList] = useState<AttendanceItem[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>([]);
@@ -99,12 +102,19 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
   const [showAddEmpModal, setShowAddEmpModal] = useState(false);
   const [submittingModal, setSubmittingModal] = useState(false);
   const [showPinModal, setShowPinModal] = useState(false);
+  const [showSiteModal, setShowSiteModal] = useState(false);
+  const [selectedSiteToEdit, setSelectedSiteToEdit] = useState<JobSite | null>(null);
 
   // New Employee Form
   const [newEmpCustomId, setNewEmpCustomId] = useState('');
   const [newEmpName, setNewEmpName] = useState('');
   const [newEmpPhone, setNewEmpPhone] = useState('');
   const [newEmpPin, setNewEmpPin] = useState('');
+  const [newEmpSiteId, setNewEmpSiteId] = useState('');
+
+  // Helper getters for JobSite properties across casing variations
+  const getSiteId = (s: JobSite) => s.id || s.ID || '';
+  const getSiteName = (s: JobSite) => s.name || s.Name || getSiteId(s);
 
   // Edit Employee Form
   const [editingEmp, setEditingEmp] = useState<EmployeeProfile | null>(null);
@@ -173,19 +183,21 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
         name: newEmpName.trim(),
         phone: newEmpPhone.trim(),
         role: 'Labourer',
+        siteId: newEmpSiteId.trim() || undefined,
         pin: newEmpPin.trim(),
       });
       if (res.success) {
         const assignedId = (res as { employeeId?: string; employee?: { id: string } }).employeeId || (res as { employee?: { id: string } }).employee?.id || 'Registered';
         setActionMessage({
           type: 'success',
-          text: `Labourer ${newEmpName} registered successfully! Assigned ID: ${assignedId}`,
+          text: `Labourer ${newEmpName} registered successfully! Assigned ID: ${assignedId}${newEmpSiteId ? ` (Assigned to ${jobSites.find(s => getSiteId(s) === newEmpSiteId.trim())?.name || newEmpSiteId.trim()})` : ''}`,
         });
         setShowAddEmpModal(false);
         setNewEmpCustomId('');
         setNewEmpName('');
         setNewEmpPhone('');
         setNewEmpPin('');
+        setNewEmpSiteId('');
         handleRefresh();
       } else {
         setActionMessage({ type: 'error', text: res.message || 'Failed to create employee' });
@@ -313,11 +325,12 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
 
   const loadAllData = useCallback(async () => {
     try {
-      const [empRes, otRes, attRes, auditRes] = await Promise.all([
+      const [empRes, otRes, attRes, auditRes, sitesRes] = await Promise.all([
         getEmployees(session.token),
         getPendingOvertime(session.token),
         getAttendance(session.token),
         getAuditLogs(session.token, 20),
+        getJobSites(session.token),
       ]);
 
       if (empRes.success && Array.isArray(empRes.employees)) {
@@ -331,6 +344,9 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
       }
       if (auditRes.success && Array.isArray(auditRes.logs)) {
         setAuditLogs(auditRes.logs as AuditLogItem[]);
+      }
+      if (sitesRes.success && Array.isArray(sitesRes.sites)) {
+        setJobSites(sitesRes.sites);
       }
     } catch (err: unknown) {
       console.error('Failed to load admin data:', err);
@@ -456,7 +472,8 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
           { id: 'overtime', label: `Pending Overtime (${overtimeList.length})` },
           { id: 'attendance', label: 'Attendance & GPS Locations' },
           { id: 'reports', label: 'Daily Reports' },
-          { id: 'employees', label: 'Employees' },
+          { id: 'employees', label: `Employees (${employees.length})` },
+          { id: 'sites', label: `Job Sites (${jobSites.length})` },
           { id: 'audit', label: 'Audit Logs' },
         ].map((tab) => (
           <button
@@ -852,7 +869,10 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                     Registered Workforce Directory
                   </h2>
                   <button
-                    onClick={() => setShowAddEmpModal(true)}
+                    onClick={() => {
+                      setNewEmpSiteId('');
+                      setShowAddEmpModal(true);
+                    }}
                     className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-md shadow-blue-600/30 transition-all flex items-center gap-1.5 cursor-pointer"
                   >
                     <span>+</span>
@@ -869,40 +889,184 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                           <th className="py-2.5 pr-4">ID</th>
                           <th className="py-2.5 pr-4">Name</th>
                           <th className="py-2.5 pr-4">Role</th>
-                          <th className="py-2.5 pr-4">Assigned Site</th>
+                          <th className="py-2.5 pr-4">Assigned Job Site</th>
                           <th className="py-2.5 pr-4">Status</th>
                           <th className="py-2.5 text-right">Actions</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800">
-                        {employees.map((emp) => (
-                          <tr key={emp.id} className="hover:bg-slate-800/30">
-                            <td className="py-3 pr-4 font-mono font-medium text-blue-400">{emp.id}</td>
-                            <td className="py-3 pr-4 text-white font-medium">{emp.name}</td>
-                            <td className="py-3 pr-4">{emp.role}</td>
-                            <td className="py-3 pr-4 font-mono text-slate-400">{emp.siteId || 'Unassigned'}</td>
-                            <td className="py-3 pr-4">
-                              <span
-                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                                  emp.status === 'Active'
-                                    ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                                    : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
-                                }`}
-                              >
-                                {emp.status}
-                              </span>
-                            </td>
-                            <td className="py-3 text-right">
-                              <button
-                                type="button"
-                                onClick={() => handleOpenEditEmp(emp)}
-                                className="px-2.5 py-1 text-xs font-medium text-blue-400 hover:text-white bg-blue-500/10 hover:bg-blue-600 rounded-lg border border-blue-500/20 transition-all cursor-pointer"
-                              >
-                                Edit
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
+                        {employees.map((emp) => {
+                          const sId = (emp.siteId || '').trim();
+                          const matchedSite = sId ? jobSites.find((s) => getSiteId(s) === sId) : null;
+
+                          return (
+                            <tr key={emp.id} className="hover:bg-slate-800/30">
+                              <td className="py-3 pr-4 font-mono font-medium text-blue-400">{emp.id}</td>
+                              <td className="py-3 pr-4 text-white font-medium">{emp.name}</td>
+                              <td className="py-3 pr-4">{emp.role}</td>
+                              <td className="py-3 pr-4">
+                                {!sId || sId === 'FIELD' || sId === 'Unassigned' ? (
+                                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                                    <span>⚠️</span> Unassigned
+                                  </span>
+                                ) : (
+                                  <div className="flex flex-col">
+                                    <span className="text-white font-medium text-xs">
+                                      {matchedSite ? getSiteName(matchedSite) : sId}
+                                    </span>
+                                    <span className="font-mono text-[10px] text-blue-400">
+                                      {sId}
+                                    </span>
+                                  </div>
+                                )}
+                              </td>
+                              <td className="py-3 pr-4">
+                                <span
+                                  className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                    emp.status === 'Active'
+                                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                      : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                                  }`}
+                                >
+                                  {emp.status}
+                                </span>
+                              </td>
+                              <td className="py-3 text-right">
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenEditEmp(emp)}
+                                  className="px-2.5 py-1 text-xs font-medium text-blue-400 hover:text-white bg-blue-500/10 hover:bg-blue-600 rounded-lg border border-blue-500/20 transition-all cursor-pointer"
+                                >
+                                  {sId ? 'Change Site / Edit' : 'Assign Site'}
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 5. JOB SITES TAB */}
+            {activeTab === 'sites' && (
+              <div>
+                <div className="flex justify-between items-center mb-4">
+                  <div>
+                    <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">
+                      Approved Job Sites & Geofences
+                    </h2>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Labourers must be within the designated geofence radius to clock in for shifts.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setSelectedSiteToEdit(null);
+                      setShowSiteModal(true);
+                    }}
+                    className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-md shadow-blue-600/30 transition-all flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <span>+</span>
+                    <span>Add Job Site</span>
+                  </button>
+                </div>
+
+                {jobSites.length === 0 ? (
+                  <div className="py-12 text-center">
+                    <p className="text-sm text-slate-400 mb-3">No job sites found in Google Sheets.</p>
+                    <button
+                      onClick={() => {
+                        setSelectedSiteToEdit(null);
+                        setShowSiteModal(true);
+                      }}
+                      className="px-4 py-2 rounded-xl bg-blue-600 text-white text-xs font-semibold shadow-md hover:bg-blue-500"
+                    >
+                      Create First Job Site
+                    </button>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs text-slate-300">
+                      <thead className="text-[10px] uppercase tracking-wider text-slate-400 border-b border-slate-700/80">
+                        <tr>
+                          <th className="py-2.5 pr-4">Site ID</th>
+                          <th className="py-2.5 pr-4">Site Name</th>
+                          <th className="py-2.5 pr-4">Address</th>
+                          <th className="py-2.5 pr-4">GPS Coordinates</th>
+                          <th className="py-2.5 pr-4">Geofence</th>
+                          <th className="py-2.5 pr-4">Assigned Workers</th>
+                          <th className="py-2.5 pr-4">Status</th>
+                          <th className="py-2.5 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800">
+                        {jobSites.map((site) => {
+                          const sid = getSiteId(site);
+                          const sname = getSiteName(site);
+                          const sLat = site.lat ?? site.Latitude;
+                          const sLon = site.lon ?? site.Longitude;
+                          const sRadius = site.geofenceRadius ?? site['Geofence Radius'] ?? 100;
+                          const assignedWorkers = employees.filter((e) => (e.siteId || '').trim() === sid);
+
+                          return (
+                            <tr key={sid} className="hover:bg-slate-800/30">
+                              <td className="py-3 pr-4 font-mono font-medium text-blue-400">{sid}</td>
+                              <td className="py-3 pr-4 text-white font-medium">{sname}</td>
+                              <td className="py-3 pr-4 text-slate-400 max-w-[180px] truncate">
+                                {site.address || site.Address || '—'}
+                              </td>
+                              <td className="py-3 pr-4 font-mono text-[11px] text-slate-300">
+                                {sLat !== undefined && sLon !== undefined ? (
+                                  <a
+                                    href={`https://www.google.com/maps?q=${sLat},${sLon}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-blue-400 hover:underline flex items-center gap-1"
+                                  >
+                                    <span>📍</span> {Number(sLat).toFixed(4)}, {Number(sLon).toFixed(4)}
+                                  </a>
+                                ) : (
+                                  '—'
+                                )}
+                              </td>
+                              <td className="py-3 pr-4 font-mono text-emerald-400 font-medium">
+                                {sRadius}m
+                              </td>
+                              <td className="py-3 pr-4">
+                                <span className="font-mono text-white font-semibold">
+                                  {assignedWorkers.length}
+                                </span>{' '}
+                                <span className="text-[11px] text-slate-400">workers</span>
+                              </td>
+                              <td className="py-3 pr-4">
+                                <span
+                                  className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                    (site.status || site.Status) === 'Active'
+                                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                      : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                                  }`}
+                                >
+                                  {site.status || site.Status || 'Active'}
+                                </span>
+                              </td>
+                              <td className="py-3 text-right">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedSiteToEdit(site);
+                                    setShowSiteModal(true);
+                                  }}
+                                  className="px-2.5 py-1 text-xs font-medium text-blue-400 hover:text-white bg-blue-500/10 hover:bg-blue-600 rounded-lg border border-blue-500/20 transition-all cursor-pointer"
+                                >
+                                  Edit Site
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -1019,6 +1183,31 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
 
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+                  Assigned Job Site
+                </label>
+                <select
+                  value={newEmpSiteId}
+                  onChange={(e) => setNewEmpSiteId(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">-- No Site Assigned (Unassigned) --</option>
+                  {jobSites.map((s) => {
+                    const sid = getSiteId(s);
+                    const sname = getSiteName(s);
+                    return (
+                      <option key={sid} value={sid}>
+                        {sname} ({sid})
+                      </option>
+                    );
+                  })}
+                </select>
+                <p className="mt-1 text-[11px] text-slate-400">
+                  Select the approved work site. The labourer can only clock in within its geofence.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
                   Initial Access PIN
                 </label>
                 <input
@@ -1108,6 +1297,31 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
 
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+                  Assigned Job Site
+                </label>
+                <select
+                  value={editEmpSiteId}
+                  onChange={(e) => setEditEmpSiteId(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">-- No Site Assigned (Unassigned) --</option>
+                  {jobSites.map((s) => {
+                    const sid = getSiteId(s);
+                    const sname = getSiteName(s);
+                    return (
+                      <option key={sid} value={sid}>
+                        {sname} ({sid})
+                      </option>
+                    );
+                  })}
+                </select>
+                <p className="mt-1 text-[11px] text-slate-400">
+                  Update site assignment at any time. Previous shifts retain their original job site.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
                   Status
                 </label>
                 <select
@@ -1156,6 +1370,21 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
       )}
 
 
+
+      {/* Job Site Modal */}
+      {showSiteModal && (
+        <JobSiteModal
+          token={session.token}
+          siteToEdit={selectedSiteToEdit}
+          onClose={() => setShowSiteModal(false)}
+          onSaved={(msg) => {
+            setActionMessage({ type: 'success', text: msg });
+            setShowSiteModal(false);
+            setSelectedSiteToEdit(null);
+            handleRefresh();
+          }}
+        />
+      )}
 
       {/* Change PIN Modal */}
       <ChangePinModal

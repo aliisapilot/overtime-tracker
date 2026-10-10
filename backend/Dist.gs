@@ -2,7 +2,7 @@
  * OVERTIME TRACKER — COMPLETE GOOGLE APPS SCRIPT BACKEND
  * Bundled for single-file deployment at script.google.com
  * Owner: Ateeb
- * Generated: 2026-10-10T15:49:45.544Z
+ * Generated: 2026-10-10T19:48:46.352Z
  */
 
 
@@ -988,14 +988,9 @@ var LocationService = (function() {
     };
   };
 
-  /**
-   * Validate user location against assigned job site
-   * @param {Object} params - { lat, lon, accuracy, siteId }
-   * @returns {Object}
-   */
   LocationServiceClass.prototype.validateLocation = function(params) {
-    var lat = parseFloat(params.lat);
-    var lon = parseFloat(params.lon);
+    var lat = parseFloat(params.lat != null ? params.lat : params.latitude);
+    var lon = parseFloat(params.lon != null ? params.lon : (params.longitude != null ? params.longitude : params.lng));
     var accuracy = parseFloat(params.accuracy);
     var siteId = params.siteId;
 
@@ -1134,8 +1129,8 @@ var ShiftService = (function() {
 
     try {
       var employeeId = (params.employeeId || '').trim().toUpperCase();
-      var lat = parseFloat(params.lat);
-      var lon = parseFloat(params.lon);
+      var lat = parseFloat(params.lat != null ? params.lat : params.latitude);
+      var lon = parseFloat(params.lon != null ? params.lon : (params.longitude != null ? params.longitude : params.lng));
       var accuracy = parseFloat(params.accuracy);
 
       if (!employeeId) {
@@ -1151,7 +1146,25 @@ var ShiftService = (function() {
         return { success: false, message: 'Employee account is not active' };
       }
 
-      var siteId = employee['Site ID'] || employee.SiteID || params.siteId || 'FIELD';
+      // Check assigned job site
+      var siteId = (employee['Site ID'] || employee.SiteID || employee.siteId || '').toString().trim();
+      if (!siteId || siteId === 'FIELD' || siteId === 'Unassigned') {
+        return { 
+          success: false, 
+          code: 400,
+          message: 'No job site assigned. Please contact your supervisor.' 
+        };
+      }
+
+      // Verify site exists in Job Sites
+      var site = _SheetsService.getJobSiteById(siteId);
+      if (!site) {
+        return { 
+          success: false, 
+          code: 404,
+          message: 'Assigned job site (' + siteId + ') was not found. Please contact your supervisor.' 
+        };
+      }
 
       // Check if employee already has an active shift (duplicate prevention)
       var activeShift = this.getActiveShift(employeeId);
@@ -1161,6 +1174,25 @@ var ShiftService = (function() {
           message: 'You already have an active shift started at ' + activeShift['Start Time'] + '. Please end that shift before starting a new one.',
           activeShift: activeShift
         };
+      }
+
+      // Validate location and geofence
+      if (_LocationService) {
+        var locValidation = _LocationService.validateLocation({
+          lat: lat,
+          lon: lon,
+          accuracy: accuracy,
+          siteId: siteId
+        });
+        if (!locValidation.valid) {
+          return {
+            success: false,
+            code: 403,
+            message: locValidation.message || locValidation.error,
+            distance: locValidation.distance,
+            geofenceRadius: locValidation.geofenceRadius
+          };
+        }
       }
 
       // Generate server timestamp
@@ -1187,13 +1219,14 @@ var ShiftService = (function() {
       };
 
       _SheetsService.appendRow(_SHEETS.SHIFTS, shiftData);
-      this.logAudit(employeeId, 'start_shift', 'success', 'Started shift ' + shiftId + ' (GPS: ' + lat + ', ' + lon + ')');
+      this.logAudit(employeeId, 'start_shift', 'success', 'Started shift ' + shiftId + ' at site ' + siteId + ' (GPS: ' + lat + ', ' + lon + ')');
 
       return {
         success: true,
         shiftId: shiftId,
         startTime: serverStartTime,
         siteId: siteId,
+        siteName: site.Name,
         lat: lat,
         lon: lon,
         accuracy: accuracy,
@@ -1220,8 +1253,8 @@ var ShiftService = (function() {
 
     try {
       var employeeId = (params.employeeId || '').trim().toUpperCase();
-      var lat = parseFloat(params.lat);
-      var lon = parseFloat(params.lon);
+      var lat = parseFloat(params.lat != null ? params.lat : params.latitude);
+      var lon = parseFloat(params.lon != null ? params.lon : (params.longitude != null ? params.longitude : params.lng));
       var accuracy = parseFloat(params.accuracy);
 
       if (!employeeId) {
@@ -1705,7 +1738,7 @@ var AdminService = (function() {
       var name = (params.name || '').trim();
       var phone = (params.phone || '').trim();
       var role = (params.role || _CONFIG.LABOURER_ROLE || 'Labourer').trim();
-      var siteId = (params.siteId || '').trim();
+      var siteId = (params.siteId || params.assignedSiteId || params['Site ID'] || '').toString().trim();
       var pin = (params.pin || '').trim();
 
       if (!name || !phone || !pin) {
@@ -1751,7 +1784,7 @@ var AdminService = (function() {
 
       _SheetsService.appendRow(_SHEETS.EMPLOYEES, employeeData);
       var adminName = session ? session.name : 'Admin';
-      this.logAudit(employeeId, 'create_employee', 'success', 'Created employee ' + employeeId + ' (' + name + ', role: ' + role + ')', adminName);
+      this.logAudit(employeeId, 'create_employee', 'success', 'Created employee ' + employeeId + ' (' + name + ', role: ' + role + (siteId ? ', site: ' + siteId : '') + ')', adminName);
 
       return {
         success: true,
@@ -1790,11 +1823,19 @@ var AdminService = (function() {
       var name = (params.name != null ? params.name : employee.Name).trim();
       var phone = (params.phone != null ? params.phone : employee.Phone).trim();
       var role = (params.role != null ? params.role : employee.Role).trim();
-      var siteId = params.siteId != null ? params.siteId : employee['Site ID'];
+      var rawSiteId = params.siteId !== undefined ? params.siteId : (params.assignedSiteId !== undefined ? params.assignedSiteId : params['Site ID']);
+      var siteId = rawSiteId !== undefined ? (rawSiteId || '').toString().trim() : (employee['Site ID'] || employee.SiteID || '');
       var status = (params.status != null ? params.status : employee.Status).trim();
 
       if (!name) {
         return { success: false, message: 'Employee name is required' };
+      }
+
+      if (siteId) {
+        var site = _SheetsService.getJobSiteById(siteId);
+        if (!site) {
+          return { success: false, message: 'Selected job site (' + siteId + ') does not exist' };
+        }
       }
 
       if (newId && newId !== currentId) {
@@ -1825,12 +1866,23 @@ var AdminService = (function() {
         return { success: false, message: 'Failed to update employee' };
       }
 
+      var finalEmpId = newId || currentId;
+      var updatedEmp = _SheetsService.getEmployeeById(finalEmpId);
+
       var adminName = session ? session.name : 'Admin';
-      this.logAudit(newId || currentId, 'update_employee', 'success', 'Updated employee ' + currentId + (newId && newId !== currentId ? ' (renamed to ' + newId + ')' : ''), adminName);
+      this.logAudit(finalEmpId, 'update_employee', 'success', 'Updated employee ' + currentId + (newId && newId !== currentId ? ' (renamed to ' + newId + ')' : '') + (siteId ? ' (site: ' + siteId + ')' : ''), adminName);
 
       return {
         success: true,
-        employeeId: newId || currentId,
+        employeeId: finalEmpId,
+        employee: updatedEmp ? {
+          id: updatedEmp.ID,
+          name: updatedEmp.Name,
+          phone: updatedEmp.Phone || '',
+          role: updatedEmp.Role || 'Labourer',
+          siteId: updatedEmp['Site ID'] || updatedEmp.SiteID || '',
+          status: updatedEmp.Status || 'Active'
+        } : null,
         message: 'Employee updated successfully'
       };
     } catch (error) {
@@ -2379,7 +2431,7 @@ var AuthService = (function() {
         return { success: false, message: 'Employee not found' };
       }
 
-      var siteId = employee['Site ID'] || employee.SiteID;
+      var siteId = employee['Site ID'] || employee.SiteID || employee.siteId || '';
       var site = siteId ? _SheetsService.getJobSiteById(siteId) : null;
 
       return {
@@ -2390,12 +2442,21 @@ var AuthService = (function() {
           phone: employee.Phone,
           role: employee.Role,
           siteId: siteId,
-          siteName: site ? site.Name : 'Unassigned',
+          siteName: site ? site.Name : (siteId ? 'Unknown Site (' + siteId + ')' : 'Unassigned'),
           siteLat: site ? parseFloat(site.Latitude) : null,
           siteLon: site ? parseFloat(site.Longitude) : null,
           geofenceRadius: site ? parseFloat(site['Geofence Radius'] || site.GeofenceRadius || _CONFIG.DEFAULT_GEOFENCE_RADIUS) : 100,
           status: employee.Status
-        }
+        },
+        jobSite: site ? {
+          id: site.ID,
+          name: site.Name,
+          address: site.Address || '',
+          lat: parseFloat(site.Latitude),
+          lon: parseFloat(site.Longitude),
+          geofenceRadius: parseFloat(site['Geofence Radius'] || site.GeofenceRadius || _CONFIG.DEFAULT_GEOFENCE_RADIUS || 100),
+          status: site.Status
+        } : null
       };
     } catch (error) {
       return { success: false, message: 'Failed to fetch employee details' };

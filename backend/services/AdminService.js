@@ -209,7 +209,7 @@ var AdminService = (function() {
       var name = (params.name || '').trim();
       var phone = (params.phone || '').trim();
       var role = (params.role || _CONFIG.LABOURER_ROLE || 'Labourer').trim();
-      var siteId = (params.siteId || '').trim();
+      var siteId = (params.siteId || params.assignedSiteId || params['Site ID'] || '').toString().trim();
       var pin = (params.pin || '').trim();
 
       if (!name || !phone || !pin) {
@@ -255,7 +255,7 @@ var AdminService = (function() {
 
       _SheetsService.appendRow(_SHEETS.EMPLOYEES, employeeData);
       var adminName = session ? session.name : 'Admin';
-      this.logAudit(employeeId, 'create_employee', 'success', 'Created employee ' + employeeId + ' (' + name + ', role: ' + role + ')', adminName);
+      this.logAudit(employeeId, 'create_employee', 'success', 'Created employee ' + employeeId + ' (' + name + ', role: ' + role + (siteId ? ', site: ' + siteId : '') + ')', adminName);
 
       return {
         success: true,
@@ -294,11 +294,19 @@ var AdminService = (function() {
       var name = (params.name != null ? params.name : employee.Name).trim();
       var phone = (params.phone != null ? params.phone : employee.Phone).trim();
       var role = (params.role != null ? params.role : employee.Role).trim();
-      var siteId = params.siteId != null ? params.siteId : employee['Site ID'];
+      var rawSiteId = params.siteId !== undefined ? params.siteId : (params.assignedSiteId !== undefined ? params.assignedSiteId : params['Site ID']);
+      var siteId = rawSiteId !== undefined ? (rawSiteId || '').toString().trim() : (employee['Site ID'] || employee.SiteID || '');
       var status = (params.status != null ? params.status : employee.Status).trim();
 
       if (!name) {
         return { success: false, message: 'Employee name is required' };
+      }
+
+      if (siteId) {
+        var site = _SheetsService.getJobSiteById(siteId);
+        if (!site) {
+          return { success: false, message: 'Selected job site (' + siteId + ') does not exist' };
+        }
       }
 
       if (newId && newId !== currentId) {
@@ -329,12 +337,23 @@ var AdminService = (function() {
         return { success: false, message: 'Failed to update employee' };
       }
 
+      var finalEmpId = newId || currentId;
+      var updatedEmp = _SheetsService.getEmployeeById(finalEmpId);
+
       var adminName = session ? session.name : 'Admin';
-      this.logAudit(newId || currentId, 'update_employee', 'success', 'Updated employee ' + currentId + (newId && newId !== currentId ? ' (renamed to ' + newId + ')' : ''), adminName);
+      this.logAudit(finalEmpId, 'update_employee', 'success', 'Updated employee ' + currentId + (newId && newId !== currentId ? ' (renamed to ' + newId + ')' : '') + (siteId ? ' (site: ' + siteId + ')' : ''), adminName);
 
       return {
         success: true,
-        employeeId: newId || currentId,
+        employeeId: finalEmpId,
+        employee: updatedEmp ? {
+          id: updatedEmp.ID,
+          name: updatedEmp.Name,
+          phone: updatedEmp.Phone || '',
+          role: updatedEmp.Role || 'Labourer',
+          siteId: updatedEmp['Site ID'] || updatedEmp.SiteID || '',
+          status: updatedEmp.Status || 'Active'
+        } : null,
         message: 'Employee updated successfully'
       };
     } catch (error) {

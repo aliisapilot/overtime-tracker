@@ -9,6 +9,10 @@ export interface EmployeeProfile {
   role: 'Admin' | 'Labourer';
   phone?: string;
   siteId?: string;
+  siteName?: string;
+  siteLat?: number | null;
+  siteLon?: number | null;
+  geofenceRadius?: number;
   status: string;
 }
 
@@ -27,13 +31,21 @@ export interface ApiResponse<T = unknown> {
 }
 
 export interface JobSite {
-  ID: string;
-  Name: string;
+  id?: string;
+  ID?: string;
+  name?: string;
+  Name?: string;
+  address?: string;
   Address?: string;
-  Latitude: number;
-  Longitude: number;
-  'Geofence Radius': number;
-  Status: string;
+  lat?: number;
+  Latitude?: number;
+  lon?: number;
+  Longitude?: number;
+  geofenceRadius?: number;
+  'Geofence Radius'?: number;
+  status?: string;
+  Status?: string;
+  createdAt?: string;
 }
 
 export interface ShiftRecord {
@@ -409,8 +421,8 @@ export async function updateEmployee(
     status?: string;
     pin?: string;
   }
-): Promise<ApiResponse<{ employeeId: string }>> {
-  return sendGasRequest<{ employeeId: string }>({
+): Promise<ApiResponse<{ employeeId: string; employee?: EmployeeProfile }>> {
+  return sendGasRequest<{ employeeId: string; employee?: EmployeeProfile }>({
     action: 'updateEmployee',
     token,
     ...data,

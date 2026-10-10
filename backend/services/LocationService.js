@@ -112,14 +112,9 @@ var LocationService = (function() {
     };
   };
 
-  /**
-   * Validate user location against assigned job site
-   * @param {Object} params - { lat, lon, accuracy, siteId }
-   * @returns {Object}
-   */
   LocationServiceClass.prototype.validateLocation = function(params) {
-    var lat = parseFloat(params.lat);
-    var lon = parseFloat(params.lon);
+    var lat = parseFloat(params.lat != null ? params.lat : params.latitude);
+    var lon = parseFloat(params.lon != null ? params.lon : (params.longitude != null ? params.longitude : params.lng));
     var accuracy = parseFloat(params.accuracy);
     var siteId = params.siteId;
 

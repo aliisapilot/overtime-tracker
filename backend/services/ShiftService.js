@@ -89,8 +89,8 @@ var ShiftService = (function() {
 
     try {
       var employeeId = (params.employeeId || '').trim().toUpperCase();
-      var lat = parseFloat(params.lat);
-      var lon = parseFloat(params.lon);
+      var lat = parseFloat(params.lat != null ? params.lat : params.latitude);
+      var lon = parseFloat(params.lon != null ? params.lon : (params.longitude != null ? params.longitude : params.lng));
       var accuracy = parseFloat(params.accuracy);
 
       if (!employeeId) {
@@ -106,7 +106,25 @@ var ShiftService = (function() {
         return { success: false, message: 'Employee account is not active' };
       }
 
-      var siteId = employee['Site ID'] || employee.SiteID || params.siteId || 'FIELD';
+      // Check assigned job site
+      var siteId = (employee['Site ID'] || employee.SiteID || employee.siteId || '').toString().trim();
+      if (!siteId || siteId === 'FIELD' || siteId === 'Unassigned') {
+        return { 
+          success: false, 
+          code: 400,
+          message: 'No job site assigned. Please contact your supervisor.' 
+        };
+      }
+
+      // Verify site exists in Job Sites
+      var site = _SheetsService.getJobSiteById(siteId);
+      if (!site) {
+        return { 
+          success: false, 
+          code: 404,
+          message: 'Assigned job site (' + siteId + ') was not found. Please contact your supervisor.' 
+        };
+      }
 
       // Check if employee already has an active shift (duplicate prevention)
       var activeShift = this.getActiveShift(employeeId);
@@ -116,6 +134,25 @@ var ShiftService = (function() {
           message: 'You already have an active shift started at ' + activeShift['Start Time'] + '. Please end that shift before starting a new one.',
           activeShift: activeShift
         };
+      }
+
+      // Validate location and geofence
+      if (_LocationService) {
+        var locValidation = _LocationService.validateLocation({
+          lat: lat,
+          lon: lon,
+          accuracy: accuracy,
+          siteId: siteId
+        });
+        if (!locValidation.valid) {
+          return {
+            success: false,
+            code: 403,
+            message: locValidation.message || locValidation.error,
+            distance: locValidation.distance,
+            geofenceRadius: locValidation.geofenceRadius
+          };
+        }
       }
 
       // Generate server timestamp
@@ -142,13 +179,14 @@ var ShiftService = (function() {
       };
 
       _SheetsService.appendRow(_SHEETS.SHIFTS, shiftData);
-      this.logAudit(employeeId, 'start_shift', 'success', 'Started shift ' + shiftId + ' (GPS: ' + lat + ', ' + lon + ')');
+      this.logAudit(employeeId, 'start_shift', 'success', 'Started shift ' + shiftId + ' at site ' + siteId + ' (GPS: ' + lat + ', ' + lon + ')');
 
       return {
         success: true,
         shiftId: shiftId,
         startTime: serverStartTime,
         siteId: siteId,
+        siteName: site.Name,
         lat: lat,
         lon: lon,
         accuracy: accuracy,
@@ -175,8 +213,8 @@ var ShiftService = (function() {
 
     try {
       var employeeId = (params.employeeId || '').trim().toUpperCase();
-      var lat = parseFloat(params.lat);
-      var lon = parseFloat(params.lon);
+      var lat = parseFloat(params.lat != null ? params.lat : params.latitude);
+      var lon = parseFloat(params.lon != null ? params.lon : (params.longitude != null ? params.longitude : params.lng));
       var accuracy = parseFloat(params.accuracy);
 
       if (!employeeId) {

@@ -30,20 +30,20 @@ export default function JobSiteModal({
   const isEditing = Boolean(siteToEdit);
 
   // Form Fields
-  const [siteName, setSiteName] = useState(siteToEdit?.Name || '');
-  const [siteAddress, setSiteAddress] = useState(siteToEdit?.Address || '');
-  const [lat, setLat] = useState<number>(siteToEdit ? siteToEdit.Latitude : 25.2048); // Default Dubai
-  const [lon, setLon] = useState<number>(siteToEdit ? siteToEdit.Longitude : 55.2708);
+  const [siteName, setSiteName] = useState(siteToEdit?.Name || siteToEdit?.name || '');
+  const [siteAddress, setSiteAddress] = useState(siteToEdit?.Address || siteToEdit?.address || '');
+  const [lat, setLat] = useState<number>(siteToEdit?.Latitude ?? siteToEdit?.lat ?? 25.2048); // Default Dubai
+  const [lon, setLon] = useState<number>(siteToEdit?.Longitude ?? siteToEdit?.lon ?? 55.2708);
   const [radiusPreset, setRadiusPreset] = useState<'50' | '100' | '200' | 'custom'>(() => {
     if (!siteToEdit) return '100';
-    const r = siteToEdit['Geofence Radius'];
+    const r = siteToEdit['Geofence Radius'] ?? siteToEdit.geofenceRadius;
     if (r === 50) return '50';
     if (r === 100) return '100';
     if (r === 200) return '200';
     return 'custom';
   });
   const [customRadius, setCustomRadius] = useState<string>(
-    siteToEdit ? String(siteToEdit['Geofence Radius']) : '100'
+    siteToEdit ? String(siteToEdit['Geofence Radius'] ?? siteToEdit.geofenceRadius ?? 100) : '100'
   );
 
   // Location Selector / Link Input
@@ -186,17 +186,18 @@ export default function JobSiteModal({
     setSubmitting(true);
     try {
       if (isEditing && siteToEdit) {
+        const siteId = siteToEdit.ID || siteToEdit.id || '';
         const res = await updateJobSite(token, {
-          siteId: siteToEdit.ID,
+          siteId,
           name,
           address: siteAddress.trim(),
           latitude: lat,
           longitude: lon,
           geofenceRadius: effectiveRadius,
-          status: siteToEdit.Status,
+          status: siteToEdit.Status || siteToEdit.status,
         });
         if (res.success) {
-          onSaved(`Job Site "${name}" (${siteToEdit.ID}) updated successfully in Google Sheets!`);
+          onSaved(`Job Site "${name}" (${siteId}) updated successfully in Google Sheets!`);
         } else {
           setFormError(res.message || 'Failed to update job site.');
         }

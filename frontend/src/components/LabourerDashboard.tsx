@@ -3,6 +3,7 @@ import dynamic from 'next/dynamic';
 import {
   UserSession,
   ShiftRecord,
+  EmployeeProfile,
   getEmployeeData,
   getEmployeeShifts,
   startShift,
@@ -11,6 +12,7 @@ import {
 import {
   getCurrentPosition,
   categorizeAccuracy,
+  calculateDistanceMeters,
   GpsCoordinates,
 } from '@/lib/geo';
 import ChangePinModal from '@/components/ChangePinModal';
@@ -24,12 +26,22 @@ const LiveLocationMap = dynamic(() => import('@/components/LiveLocationMap'), {
   ),
 });
 
+const GeofenceMap = dynamic(() => import('@/components/GeofenceMap'), {
+  ssr: false,
+  loading: () => (
+    <div className="w-full h-64 rounded-2xl bg-slate-800/60 flex items-center justify-center text-slate-400 text-xs">
+      Loading interactive site geofence map...
+    </div>
+  ),
+});
+
 interface LabourerDashboardProps {
   session: UserSession;
   onLogout: () => void;
 }
 
 export default function LabourerDashboard({ session, onLogout }: LabourerDashboardProps) {
+  const [employeeProfile, setEmployeeProfile] = useState<EmployeeProfile>(session.employee);
   const [shifts, setShifts] = useState<ShiftRecord[]>([]);
   const [loadingData, setLoadingData] = useState(true);
   const [activeShift, setActiveShift] = useState<ShiftRecord | null>(null);
@@ -45,6 +57,18 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
   const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [breakMinutes, setBreakMinutes] = useState(60);
   const [showPinModal, setShowPinModal] = useState(false);
+
+  // Derived site info
+  const assignedSiteId = (employeeProfile.siteId || '').trim();
+  const hasAssignedSite = Boolean(assignedSiteId && assignedSiteId !== 'FIELD' && assignedSiteId !== 'Unassigned');
+  const siteLat = employeeProfile.siteLat != null ? Number(employeeProfile.siteLat) : null;
+  const siteLon = employeeProfile.siteLon != null ? Number(employeeProfile.siteLon) : null;
+  const geofenceRadius = employeeProfile.geofenceRadius || 100;
+
+  const distanceMeters = (gps && siteLat != null && siteLon != null)
+    ? calculateDistanceMeters(gps.lat, gps.lon, siteLat, siteLon)
+    : null;
+  const isInsideGeofence = distanceMeters != null ? distanceMeters <= geofenceRadius : false;
 
   // Load employee profile & active shifts
   const loadData = useCallback(async () => {
@@ -64,7 +88,7 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
         setActiveShift(currentActive || null);
       }
       if (empRes.success && empRes.employee) {
-        // Updated profile if needed
+        setEmployeeProfile(empRes.employee as EmployeeProfile);
       }
     } catch (err: unknown) {
       console.error('Failed to load dashboard data:', err);
@@ -95,8 +119,16 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
     acquireGps();
   }, [loadData, acquireGps]);
 
-  // Handle Start Shift (captures live GPS location directly)
+  // Handle Start Shift (captures live GPS location directly with assigned site verification)
   const handleStartShift = async () => {
+    if (!hasAssignedSite) {
+      setActionMessage({
+        type: 'error',
+        text: 'No job site assigned. Please contact your supervisor.',
+      });
+      return;
+    }
+
     let currentGps = gps;
     if (!currentGps) {
       currentGps = await acquireGps();
@@ -109,11 +141,32 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
       return;
     }
 
+    // Check GPS accuracy tolerance (<= 30m)
+    if (currentGps.accuracy > 30) {
+      setActionMessage({
+        type: 'error',
+        text: `GPS signal accuracy (±${Math.round(currentGps.accuracy)}m) exceeds maximum allowable limit (30m). Please step into an open area for a stronger satellite lock.`,
+      });
+      return;
+    }
+
+    // Check geofence if site coordinates are configured
+    if (siteLat != null && siteLon != null) {
+      const dist = calculateDistanceMeters(currentGps.lat, currentGps.lon, siteLat, siteLon);
+      if (dist > geofenceRadius) {
+        setActionMessage({
+          type: 'error',
+          text: `Outside assigned work site (${dist}m away from ${employeeProfile.siteName || assignedSiteId}, allowed radius is ${geofenceRadius}m). You must be within the work site boundary to clock in.`,
+        });
+        return;
+      }
+    }
+
     setActionLoading(true);
     setActionMessage(null);
 
     try {
-      const res = await startShift(session.token, session.employee.id, 'FIELD', {
+      const res = await startShift(session.token, session.employee.id, assignedSiteId, {
         lat: currentGps.lat,
         lon: currentGps.lon,
         accuracy: Math.round(currentGps.accuracy),
@@ -122,7 +175,7 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
       if (res.success) {
         setActionMessage({
           type: 'success',
-          text: `Shift started! Location recorded at ${currentGps.lat.toFixed(5)}, ${currentGps.lon.toFixed(5)}.`,
+          text: `Shift started successfully at ${employeeProfile.siteName || assignedSiteId}! Location recorded at ${currentGps.lat.toFixed(5)}, ${currentGps.lon.toFixed(5)}.`,
         });
         await loadData();
       } else {
@@ -198,7 +251,10 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
               <h1 className="text-xl sm:text-2xl font-bold text-white">{session.employee.name}</h1>
               <p className="text-xs sm:text-sm text-slate-400">
                 ID: <span className="font-mono text-blue-400 font-medium">{session.employee.id}</span> • Role:{' '}
-                {session.employee.role}
+                {session.employee.role} • Site:{' '}
+                <span className={hasAssignedSite ? 'text-emerald-400 font-medium' : 'text-amber-400 font-medium'}>
+                  {hasAssignedSite ? (employeeProfile.siteName || assignedSiteId) : 'Unassigned'}
+                </span>
               </p>
             </div>
           </div>
@@ -234,6 +290,60 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
             Dismiss
           </button>
         </div>
+      )}
+
+      {/* Assigned Job Site & Geofence Card */}
+      {!hasAssignedSite ? (
+        <section className="p-5 sm:p-6 rounded-3xl bg-amber-500/10 border border-amber-500/30 flex items-start gap-4 shadow-lg shadow-amber-500/5">
+          <div className="w-10 h-10 rounded-2xl bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-amber-400 font-bold text-lg flex-shrink-0">
+            ⚠️
+          </div>
+          <div className="flex-1">
+            <h2 className="text-base font-bold text-amber-200">No Job Site Assigned</h2>
+            <p className="text-xs sm:text-sm text-amber-300/90 mt-1">
+              No job site assigned. Please contact your supervisor.
+            </p>
+            <p className="text-[11px] text-amber-400/80 mt-2">
+              Your supervisor Ateeb can assign you to a job site from the Admin Dashboard at any time. Once assigned, you will be able to start your shift.
+            </p>
+          </div>
+        </section>
+      ) : (
+        <section className="glass-card rounded-3xl p-5 sm:p-6 border-blue-500/20">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-lg">🏢</span>
+                <h2 className="text-base font-bold text-white">
+                  {employeeProfile.siteName || assignedSiteId}
+                </h2>
+                <span className="font-mono text-xs px-2 py-0.5 rounded-md bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                  {assignedSiteId}
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-1">
+                Approved Geofence Radius: <span className="font-mono text-slate-300 font-semibold">{geofenceRadius}m</span>
+              </p>
+            </div>
+
+            {/* Geofence Status Badge */}
+            {gps && (
+              <div>
+                {isInsideGeofence ? (
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 shadow-sm shadow-emerald-500/20">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                    Within Work Site Geofence ({distanceMeters}m away)
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-rose-500/10 text-rose-300 border border-rose-500/30">
+                    <span className="w-2 h-2 rounded-full bg-rose-400" />
+                    Outside Site ({distanceMeters != null ? `${distanceMeters}m away` : 'Locating...'} • Allowed: {geofenceRadius}m)
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+        </section>
       )}
 
       {/* Main Grid: Shift Status & GPS Telemetry */}
@@ -348,8 +458,35 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
         </section>
       </div>
 
-      {/* Live Location Map */}
-      {gps && (
+      {/* Geofence or Live Location Map */}
+      {(siteLat != null && siteLon != null) ? (
+        <section className="glass-card rounded-3xl p-5 sm:p-6">
+          <div className="flex justify-between items-center mb-3">
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+              <span>🗺️</span>
+              <span>Job Site Geofence Boundary</span>
+            </h2>
+            <button
+              onClick={() => setShowMap(!showMap)}
+              className="text-xs text-blue-400 hover:text-blue-300 font-medium transition-colors"
+            >
+              {showMap ? 'Hide Map' : 'Show Map'}
+            </button>
+          </div>
+          {showMap && (
+            <GeofenceMap
+              siteLat={siteLat}
+              siteLon={siteLon}
+              siteName={employeeProfile.siteName || assignedSiteId}
+              geofenceRadius={geofenceRadius}
+              userLat={gps?.lat}
+              userLon={gps?.lon}
+              userAccuracy={gps?.accuracy}
+              insideGeofence={isInsideGeofence}
+            />
+          )}
+        </section>
+      ) : gps ? (
         <section className="glass-card rounded-3xl p-5 sm:p-6">
           <div className="flex justify-between items-center mb-3">
             <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-300 flex items-center gap-2">
@@ -373,7 +510,7 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
             />
           )}
         </section>
-      )}
+      ) : null}
 
       {/* Large Action Buttons (START / END SHIFT) */}
       <section className="glass-panel rounded-3xl p-6 sm:p-8">
@@ -385,6 +522,12 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
                 Your clock-in timestamp and live location will be recorded to the company attendance ledger.
               </p>
             </div>
+
+            {!hasAssignedSite && (
+              <div className="p-3 mb-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs text-center font-medium">
+                ⚠️ No job site assigned. Please contact your supervisor before starting shift.
+              </div>
+            )}
 
             <button
               onClick={handleStartShift}
