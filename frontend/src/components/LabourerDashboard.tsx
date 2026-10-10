@@ -124,10 +124,9 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
       return;
     }
 
-    let currentGps = gps;
-    if (!currentGps) {
-      currentGps = await acquireGps();
-    }
+    // A shift action must capture a fresh position, never reuse the
+    // position acquired when the dashboard first opened.
+    const currentGps = await acquireGps();
     if (!currentGps) {
       setActionMessage({
         type: 'error',
@@ -206,10 +205,9 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
 
   // Handle End Shift (captures live GPS location directly)
   const handleEndShift = async () => {
-    let currentGps = gps;
-    if (!currentGps) {
-      currentGps = await acquireGps();
-    }
+    // A shift action must capture a fresh position, never reuse the
+    // position acquired when the dashboard first opened.
+    const currentGps = await acquireGps();
     if (!currentGps) {
       setActionMessage({
         type: 'error',
