@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { login, testPing, UserSession } from '@/lib/api';
+import { logDiagnostic } from '@/lib/diagnostics';
 
 interface LoginViewProps {
   onLoginSuccess: (session: UserSession) => void;
@@ -10,27 +11,61 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
   const [pin, setPin] = useState('');
   const [showPin, setShowPin] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loadingMessage, setLoadingMessage] = useState('Authenticating...');
   const [error, setError] = useState<string | null>(null);
-  const [backendStatus, setBackendStatus] = useState<'checking' | 'online' | 'offline'>('checking');
+  const [backendStatus, setBackendStatus] = useState<'checking' | 'online' | 'ready'>('checking');
   const [activeTab, setActiveTab] = useState<'keypad' | 'keyboard'>('keyboard');
 
-  // Verify backend connectivity on mount
+  const isSubmittingRef = useRef(false);
+  const pingControllerRef = useRef<AbortController | null>(null);
+  const loadingTimerRef = useRef<NodeJS.Timeout[]>([]);
+
+  // Non-blocking connectivity warm-up on mount
   useEffect(() => {
     let isMounted = true;
-    testPing().then((res) => {
-      if (isMounted) {
-        setBackendStatus(res.ok ? 'online' : 'offline');
-      }
-    });
+    const controller = new AbortController();
+    pingControllerRef.current = controller;
+
+    testPing(controller.signal)
+      .then((res) => {
+        if (isMounted) {
+          setBackendStatus(res.ok ? 'online' : 'ready');
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          setBackendStatus('ready');
+        }
+      });
+
     return () => {
       isMounted = false;
+      controller.abort();
     };
   }, []);
+
+  // Progressive loading feedback during cold starts
+  const startLoadingMessages = () => {
+    setLoadingMessage('Authenticating...');
+    const t1 = setTimeout(() => setLoadingMessage('Connecting to secure server...'), 3000);
+    const t2 = setTimeout(() => setLoadingMessage('Waking up server, please wait...'), 8000);
+    const t3 = setTimeout(() => setLoadingMessage('Verifying credentials with database...'), 16000);
+    loadingTimerRef.current = [t1, t2, t3];
+  };
+
+  const clearLoadingMessages = () => {
+    loadingTimerRef.current.forEach((t) => clearTimeout(t));
+    loadingTimerRef.current = [];
+  };
 
   const [focusedField, setFocusedField] = useState<'id' | 'pin'>('id');
 
   const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
+
+    // Prevent double form submissions or rapid re-clicks
+    if (loading || isSubmittingRef.current) return;
+
     if (!employeeId.trim()) {
       setError('Please enter your Employee ID (e.g. EMP000, EMP001, or just 1)');
       return;
@@ -40,23 +75,35 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
       return;
     }
 
+    // Cancel any pending background ping immediately so GAS can devote 100% capacity to login
+    if (pingControllerRef.current) {
+      pingControllerRef.current.abort();
+      pingControllerRef.current = null;
+    }
+
     setError(null);
     setLoading(true);
+    isSubmittingRef.current = true;
+    startLoadingMessages();
 
     try {
       const res = await login(employeeId, pin);
       if (res.success && res.token && res.employee) {
+        logDiagnostic('NAVIGATION_START', { role: res.employee.role });
         onLoginSuccess({
           token: res.token,
           employee: res.employee,
         });
+        logDiagnostic('NAVIGATION_COMPLETE');
       } else {
         setError(res.message || 'Login failed. Please check your credentials.');
       }
     } catch (err: unknown) {
       setError((err as Error).message || 'Connection error. Please try again.');
     } finally {
+      clearLoadingMessages();
       setLoading(false);
+      isSubmittingRef.current = false;
     }
   };
 
@@ -112,15 +159,15 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
                   ? 'bg-emerald-400 animate-pulse'
                   : backendStatus === 'checking'
                   ? 'bg-amber-400 animate-ping'
-                  : 'bg-rose-400'
+                  : 'bg-blue-400'
               }`}
             />
             <span className="text-slate-300">
               {backendStatus === 'online'
                 ? 'Backend Connected (Live)'
                 : backendStatus === 'checking'
-                ? 'Checking backend...'
-                : 'Backend Offline'}
+                ? 'Connecting to backend...'
+                : 'System Ready'}
             </span>
           </div>
         </div>
@@ -294,16 +341,16 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
             {/* Submit Button */}
             <button
               type="submit"
-              disabled={loading || backendStatus === 'offline'}
-              className="w-full mt-4 flex items-center justify-center py-3.5 px-4 rounded-xl text-base font-semibold text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 active:scale-[0.99] transition-all shadow-lg shadow-blue-600/30 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+              disabled={loading}
+              className="w-full mt-4 flex items-center justify-center py-3.5 px-4 rounded-xl text-base font-semibold text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 active:scale-[0.99] transition-all shadow-lg shadow-blue-600/30 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer touch-manipulation"
             >
               {loading ? (
                 <div className="flex items-center gap-2">
-                  <svg className="animate-spin h-5 w-5 text-white" fill="none" viewBox="0 0 24 24">
+                  <svg className="animate-spin h-5 w-5 text-white shrink-0" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
                   </svg>
-                  <span>Authenticating...</span>
+                  <span className="text-sm font-medium">{loadingMessage}</span>
                 </div>
               ) : (
                 <span>Sign In to System</span>

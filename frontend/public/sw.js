@@ -1,8 +1,7 @@
 // Overtime Tracker Service Worker
-const CACHE_NAME = 'overtime-tracker-v1';
+const CACHE_NAME = 'overtime-tracker-v2';
 
 const STATIC_ASSETS = [
-  '/',
   '/manifest.json',
   '/icon.svg',
 ];
@@ -32,12 +31,18 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
-  // Let Google Apps Script API calls pass directly over the network
-  if (event.request.url.includes('script.google.com') || event.request.url.includes('script.googleusercontent.com')) {
+  // Never intercept non-GET requests (e.g. POST auth payloads)
+  if (event.request.method !== 'GET') {
     return;
   }
 
-  // Network first with cache fallback for static page assets
+  // Let Google Apps Script API calls pass directly over the network
+  const url = event.request.url;
+  if (url.includes('script.google.com') || url.includes('script.googleusercontent.com')) {
+    return;
+  }
+
+  // Network first with cache fallback for static assets
   event.respondWith(
     fetch(event.request)
       .then((response) => {
@@ -48,3 +53,4 @@ self.addEventListener('fetch', (event) => {
       })
   );
 });
+

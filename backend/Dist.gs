@@ -2,7 +2,7 @@
  * OVERTIME TRACKER — COMPLETE GOOGLE APPS SCRIPT BACKEND
  * Bundled for single-file deployment at script.google.com
  * Owner: Ateeb
- * Generated: 2026-10-09T16:23:14.804Z
+ * Generated: 2026-10-10T15:49:45.544Z
  */
 
 
@@ -2252,13 +2252,21 @@ var AuthService = (function() {
       }
 
       var employee = _SheetsService.getEmployeeById(employeeId);
-      if (!employee && /^\d+$/.test(employeeId)) {
-        var paddedId = 'EMP' + ('000' + employeeId).slice(-3);
-        var fallbackEmployee = _SheetsService.getEmployeeById(paddedId);
-        if (fallbackEmployee) {
-          employee = fallbackEmployee;
-          employeeId = paddedId;
+      if (!employee) {
+        var numMatch = employeeId.match(/^(?:EMP)?(\d+)$/i);
+        if (numMatch) {
+          var paddedId = 'EMP' + ('000' + numMatch[1]).slice(-3);
+          var fallbackEmployee = _SheetsService.getEmployeeById(paddedId);
+          if (fallbackEmployee) {
+            employee = fallbackEmployee;
+            employeeId = paddedId;
+          }
         }
+      }
+
+      if (typeof Logger !== 'undefined') {
+        var masked = employeeId.length > 3 ? employeeId.slice(0, 3) + '***' : employeeId;
+        Logger.log('[AUTH] Login attempt received for ' + masked);
       }
 
       if (!employee) {

@@ -8,13 +8,24 @@ export default function HomePage() {
   const [session, setSession] = useState<UserSession | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
 
-  // Restore authenticated session from localStorage if present
+  // Restore authenticated session from localStorage if present and valid
   useEffect(() => {
     const existingSession = getSession();
     if (existingSession && existingSession.token && existingSession.employee) {
       setSession(existingSession);
     }
     setCheckingSession(false);
+
+    // Listen for global session expiry events
+    const handleAuthExpired = () => {
+      clearSession();
+      setSession(null);
+    };
+
+    window.addEventListener('auth:expired', handleAuthExpired);
+    return () => {
+      window.removeEventListener('auth:expired', handleAuthExpired);
+    };
   }, []);
 
   const handleLoginSuccess = (newSession: UserSession) => {

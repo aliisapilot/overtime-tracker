@@ -1,13 +1,22 @@
 # Project Status
 
 **Last Updated**: 2026-10-10
-**Version**: 1.5.0 (Simplified Sequential Employee IDs EMP001, Dual-Field Numeric Keypad Login, Full Workforce Profile Management)
+**Version**: 1.6.0 (First-Attempt Login Reliability Fix, Progressive Cold-Start UX, Safe Diagnostics, Bounded Network Retries)
 
 ---
 
 ## Completed Features
 
 ### Frontend (Next.js 14 + TypeScript + Tailwind CSS)
+- [x] **First-Attempt Login Reliability & Cold-Start UX**:
+  - Eliminated the bug where background ping health-checks caused the sign-in button to be disabled or compete with authentication.
+  - Implemented automatic background ping cancellation upon login submit to dedicate 100% Google Apps Script container capacity to authentication.
+  - Added 45-second adaptive cold-start timeout and progressive status feedback (`Authenticating...` -> `Connecting to secure server...` -> `Waking up server, please wait...`).
+  - Added re-entrancy locks (`isSubmittingRef`) to prevent duplicate form submissions from rapid mobile double-taps.
+  - Added bounded safe network retries (1 attempt, 1.2s backoff) exclusively for transport dropouts and timeouts, with zero retries for invalid PIN attempts.
+  - Added safe, structured diagnostics (`src/lib/diagnostics.ts`) distinguishing network vs auth vs navigation failures without logging credentials or tokens.
+  - Added proactive session validation (`isSessionValid`) that automatically flushes stale/expired tokens and redirects upon 401 Unauthorized.
+  - Updated Service Worker (`sw.js`) to ignore non-GET requests and bypass API endpoints to prevent stream disruption on iOS Safari and Android Chrome.
 - [x] **Tailwind CSS & Global Styles Fix**: Added `src/pages/_app.tsx` and `src/styles/globals.css` with Inter typography, dark slate theme, glassmorphism panels, glowing action buttons, and mobile-friendly touch targets.
 - [x] **Zero Mock Data in Production UI**: Eliminated all hardcoded sample labourers, dummy job sites, and fake attendance records from the frontend.
 - [x] **Live Backend Transport**: Implemented `src/lib/api.ts` with CORS-safe `text/plain;charset=utf-8` transport, automatic 302 redirect handling, session persistence, and full error diagnostics.
@@ -79,7 +88,10 @@
 # 1. Run automated backend test suite
 node backend/test/backend-test.js
 
-# 2. Frontend verification
+# 2. Run login reliability regression test suite
+node backend/test/login-reliability-test.js
+
+# 3. Frontend verification
 cd frontend
 npx tsc --noEmit
 npm run lint
