@@ -2,7 +2,7 @@
  * Live End-to-End Integration Verification against deployed Google Apps Script
  */
 
-const GAS_URL = 'https://script.google.com/macros/s/AKfycbzMnWtI2MNLxuNMzt_BrIcgY_jXfHd1tTG1qL4DyJDG3PVbC5JO96FPsUP-_eP2SJ7Z/exec';
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbzAsJfsSviCiq47tTG6srTqAo4yZTFaGZDG0SQOPZjWNHdMSiyI8ELfuk2FmQ39QPcP/exec';
 
 async function sendRequest(payload, timeoutMs = 35000) {
   const controller = new AbortController();
