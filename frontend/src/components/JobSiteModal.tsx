@@ -18,7 +18,7 @@ interface JobSiteModalProps {
   token: string;
   siteToEdit?: JobSite | null;
   onClose: () => void;
-  onSaved: (message: string) => void;
+  onSaved: (message: string, site?: JobSite) => void;
 }
 
 export default function JobSiteModal({
@@ -197,7 +197,11 @@ export default function JobSiteModal({
           status: siteToEdit.Status || siteToEdit.status,
         });
         if (res.success) {
-          onSaved(`Job Site "${name}" (${siteId}) updated successfully in Google Sheets!`);
+          onSaved(`Job Site "${name}" (${siteId}) updated successfully in Google Sheets!`, {
+            ...(res.site || {}),
+            ID: siteId, id: siteId, Name: name, name, Address: siteAddress.trim(), address: siteAddress.trim(),
+            Latitude: lat, lat, Longitude: lon, lon, 'Geofence Radius': effectiveRadius, geofenceRadius: effectiveRadius,
+          });
         } else {
           setFormError(res.message || 'Failed to update job site.');
         }
@@ -210,7 +214,10 @@ export default function JobSiteModal({
           geofenceRadius: effectiveRadius,
         });
         if (res.success) {
-          onSaved(`Job Site "${name}" created successfully in Google Sheets!`);
+          onSaved(`Job Site "${name}" created successfully in Google Sheets!`, res.site
+            ? { ...res.site, Name: name, name, Address: siteAddress.trim(), address: siteAddress.trim(),
+                Latitude: lat, lat, Longitude: lon, lon, 'Geofence Radius': effectiveRadius, geofenceRadius: effectiveRadius }
+            : undefined);
         } else {
           setFormError(res.message || 'Failed to create job site.');
         }
