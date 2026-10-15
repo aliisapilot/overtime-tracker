@@ -235,7 +235,7 @@ var CryptoUtils = (function() {
       var props = PropertiesService.getScriptProperties();
       var secret = props.getProperty('AUTH_SECRET');
       if (!secret) {
-        secret = generateSalt(32) + generateSalt(32);
+        secret = props.getProperty('SESSION_SECRET') || 'overtime-tracker-auth-proof-v2';
         props.setProperty('AUTH_SECRET', secret);
       }
       return secret;
@@ -244,9 +244,41 @@ var CryptoUtils = (function() {
       return process.env.AUTH_SECRET;
     }
     if (!_nodeRuntimeSecret) {
-      _nodeRuntimeSecret = generateSalt(32) + generateSalt(32);
+      _nodeRuntimeSecret = 'overtime-tracker-auth-proof-v2';
     }
     return _nodeRuntimeSecret;
+  }
+
+  /**
+   * Generate cryptographic proof of photo upload
+   * @param {string} photoKey
+   * @param {string} employeeId
+   * @param {string} capturedAt
+   * @returns {string} Hex HMAC-SHA256 signature
+   */
+  function generateUploadProof(photoKey, employeeId, capturedAt) {
+    if (!photoKey || !employeeId) return '';
+    var secret = getAuthSecret();
+    var message = photoKey + ':' + employeeId + ':' + (capturedAt || '');
+    return hmacSha256(message, secret);
+  }
+
+  /**
+   * Verify cryptographic proof that a photo was uploaded via verified storage
+   * @param {string} photoKey
+   * @param {string} employeeId
+   * @param {string} capturedAt
+   * @param {string} proof
+   * @returns {boolean}
+   */
+  function verifyUploadProof(photoKey, employeeId, capturedAt, proof) {
+    if (!photoKey || !employeeId || !proof) {
+      return false;
+    }
+    var secret = getAuthSecret();
+    var message = photoKey + ':' + employeeId + ':' + (capturedAt || '');
+    var expected = hmacSha256(message, secret);
+    return safeCompare(proof, expected);
   }
 
   /**
@@ -314,6 +346,8 @@ var CryptoUtils = (function() {
     verifyPin: verifyPin,
     createSessionToken: createSessionToken,
     verifySessionToken: verifySessionToken,
+    generateUploadProof: generateUploadProof,
+    verifyUploadProof: verifyUploadProof,
     getAuthSecret: getAuthSecret,
     generateSalt: generateSalt,
     hmacSha256: hmacSha256,

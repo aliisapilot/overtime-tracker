@@ -18,6 +18,10 @@ var _LocationService = (typeof LocationService !== 'undefined')
   ? LocationService
   : (typeof require !== 'undefined' ? require('./LocationService') : null);
 
+var _CryptoUtils = (typeof CryptoUtils !== 'undefined')
+  ? CryptoUtils
+  : (typeof require !== 'undefined' ? require('../lib/CryptoUtils') : null);
+
 var ShiftService = (function() {
   function ShiftServiceClass() {
     this.regularHours = parseFloat(_CONFIG.DEFAULT_REGULAR_HOURS || 8);
@@ -155,9 +159,11 @@ var ShiftService = (function() {
         }
       }
 
-      // Validate mandatory selfie photo reference
+      // Validate mandatory selfie photo reference, ownership and cryptographic proof
       var photoKey = (params.photoKey || '').toString().trim();
       var photoCapturedAt = (params.photoCapturedAt || '').toString().trim();
+      var photoProof = (params.photoProof || '').toString().trim();
+
       if (!photoKey) {
         return {
           success: false,
@@ -166,11 +172,29 @@ var ShiftService = (function() {
         };
       }
 
-      if (photoKey.indexOf('photos/') !== 0) {
+      var photoKeyPattern = /^photos\/([A-Za-z0-9_-]+)\/\d{8}\/start_[a-f0-9]+\.(jpg|jpeg|png|webp)$/i;
+      var keyMatch = photoKey.match(photoKeyPattern);
+      if (!keyMatch) {
         return {
           success: false,
           code: 400,
-          message: 'Invalid photo reference format. Must begin with photos/'
+          message: 'Invalid start photo reference format. Key must match photos/{employeeId}/{date}/start_{id}.jpg'
+        };
+      }
+
+      if (keyMatch[1].toUpperCase() !== employeeId.toUpperCase()) {
+        return {
+          success: false,
+          code: 403,
+          message: 'Forbidden: Photo reference employee ID mismatch'
+        };
+      }
+
+      if (!_CryptoUtils.verifyUploadProof(photoKey, employeeId, photoCapturedAt, photoProof)) {
+        return {
+          success: false,
+          code: 403,
+          message: 'Invalid or missing photo upload proof. Attendance selfies must be uploaded through authorized storage.'
         };
       }
 
@@ -267,9 +291,11 @@ var ShiftService = (function() {
         return { success: false, message: 'No active shift found for this employee to end.' };
       }
 
-      // Validate mandatory selfie photo reference
+      // Validate mandatory selfie photo reference, ownership and cryptographic proof
       var photoKey = (params.photoKey || '').toString().trim();
       var photoCapturedAt = (params.photoCapturedAt || '').toString().trim();
+      var photoProof = (params.photoProof || '').toString().trim();
+
       if (!photoKey) {
         return {
           success: false,
@@ -278,11 +304,29 @@ var ShiftService = (function() {
         };
       }
 
-      if (photoKey.indexOf('photos/') !== 0) {
+      var photoKeyPattern = /^photos\/([A-Za-z0-9_-]+)\/\d{8}\/end_[a-f0-9]+\.(jpg|jpeg|png|webp)$/i;
+      var keyMatch = photoKey.match(photoKeyPattern);
+      if (!keyMatch) {
         return {
           success: false,
           code: 400,
-          message: 'Invalid photo reference format. Must begin with photos/'
+          message: 'Invalid end photo reference format. Key must match photos/{employeeId}/{date}/end_{id}.jpg'
+        };
+      }
+
+      if (keyMatch[1].toUpperCase() !== employeeId.toUpperCase()) {
+        return {
+          success: false,
+          code: 403,
+          message: 'Forbidden: Photo reference employee ID mismatch'
+        };
+      }
+
+      if (!_CryptoUtils.verifyUploadProof(photoKey, employeeId, photoCapturedAt, photoProof)) {
+        return {
+          success: false,
+          code: 403,
+          message: 'Invalid or missing photo upload proof. Attendance selfies must be uploaded through authorized storage.'
         };
       }
 

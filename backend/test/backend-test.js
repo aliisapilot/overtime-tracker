@@ -282,9 +282,18 @@ runTest('Geofence calculation rejects location far away (>100m)', () => {
   assert.ok(res.distance > 500);
 });
 
-// 5. SHIFT & OVERTIME TESTS (WITH MANDATORY SELFIE VERIFICATION)
+// 5. SHIFT & OVERTIME TESTS (WITH MANDATORY SELFIE VERIFICATION & PROOF)
 console.log('\n[5. Shift Management & Overtime Tests]');
 let activeShiftId = null;
+
+const testDate = '20261015';
+const validStartKey = `photos/EMP001/${testDate}/start_a1b2c3d4.jpg`;
+const validStartCapturedAt = '2026-10-15T08:00:00.000Z';
+const validStartProof = CryptoUtils.generateUploadProof(validStartKey, 'EMP001', validStartCapturedAt);
+
+const validEndKey = `photos/EMP001/${testDate}/end_e5f6a7b8.jpg`;
+const validEndCapturedAt = '2026-10-15T19:00:00.000Z';
+const validEndProof = CryptoUtils.generateUploadProof(validEndKey, 'EMP001', validEndCapturedAt);
 
 runTest('Start shift without selfie photo is rejected', () => {
   const res = ShiftService.startShift({
@@ -308,23 +317,87 @@ runTest('Start shift with invalid photo format is rejected', () => {
   });
   assert.strictEqual(res.success, false);
   assert.strictEqual(res.code, 400);
-  assert.ok(res.message.includes('Must begin with photos/'));
+  assert.ok(res.message.includes('Invalid start photo reference format'));
 });
 
-runTest('Start shift records worker live GPS, photo key and server timestamp', () => {
+runTest('Start shift with photo key employee ID mismatch is rejected with 403', () => {
+  const mismatchKey = `photos/EMP002/${testDate}/start_a1b2c3d4.jpg`;
+  const mismatchProof = CryptoUtils.generateUploadProof(mismatchKey, 'EMP002', validStartCapturedAt);
   const res = ShiftService.startShift({
     employeeId: 'EMP001',
     lat: 25.2533,
     lon: 55.3652,
     accuracy: 18,
-    photoKey: 'photos/EMP001/start_test_001.jpg',
-    photoCapturedAt: new Date().toISOString()
+    photoKey: mismatchKey,
+    photoCapturedAt: validStartCapturedAt,
+    photoProof: mismatchProof
+  });
+  assert.strictEqual(res.success, false);
+  assert.strictEqual(res.code, 403);
+  assert.ok(res.message.includes('Photo reference employee ID mismatch'));
+});
+
+runTest('Start shift with end_ photo key is rejected with 400', () => {
+  const endKeyForStart = `photos/EMP001/${testDate}/end_a1b2c3d4.jpg`;
+  const res = ShiftService.startShift({
+    employeeId: 'EMP001',
+    lat: 25.2533,
+    lon: 55.3652,
+    accuracy: 18,
+    photoKey: endKeyForStart,
+    photoCapturedAt: validStartCapturedAt,
+    photoProof: validStartProof
+  });
+  assert.strictEqual(res.success, false);
+  assert.strictEqual(res.code, 400);
+  assert.ok(res.message.includes('Invalid start photo reference format'));
+});
+
+runTest('Start shift with fabricated photo key (missing proof) is rejected with 403', () => {
+  const res = ShiftService.startShift({
+    employeeId: 'EMP001',
+    lat: 25.2533,
+    lon: 55.3652,
+    accuracy: 18,
+    photoKey: validStartKey,
+    photoCapturedAt: validStartCapturedAt
+    // No photoProof
+  });
+  assert.strictEqual(res.success, false);
+  assert.strictEqual(res.code, 403);
+  assert.ok(res.message.includes('Invalid or missing photo upload proof'));
+});
+
+runTest('Start shift with tampered photo upload proof is rejected with 403', () => {
+  const res = ShiftService.startShift({
+    employeeId: 'EMP001',
+    lat: 25.2533,
+    lon: 55.3652,
+    accuracy: 18,
+    photoKey: validStartKey,
+    photoCapturedAt: validStartCapturedAt,
+    photoProof: '0000000000000000000000000000000000000000000000000000000000000000'
+  });
+  assert.strictEqual(res.success, false);
+  assert.strictEqual(res.code, 403);
+  assert.ok(res.message.includes('Invalid or missing photo upload proof'));
+});
+
+runTest('Start shift records worker live GPS, photo key and server timestamp with verified proof', () => {
+  const res = ShiftService.startShift({
+    employeeId: 'EMP001',
+    lat: 25.2533,
+    lon: 55.3652,
+    accuracy: 18,
+    photoKey: validStartKey,
+    photoCapturedAt: validStartCapturedAt,
+    photoProof: validStartProof
   });
   assert.strictEqual(res.success, true);
   assert.ok(res.shiftId.startsWith('SHIFT'));
   assert.strictEqual(res.lat, 25.2533);
   assert.strictEqual(res.lon, 55.3652);
-  assert.strictEqual(res.photoKey, 'photos/EMP001/start_test_001.jpg');
+  assert.strictEqual(res.photoKey, validStartKey);
   assert.strictEqual(res.photoVerificationStatus, 'Verified');
   activeShiftId = res.shiftId;
 });
@@ -334,31 +407,22 @@ runTest('Start shift records start latitude, longitude and photo metadata in dat
   assert.ok(shiftRecord, 'Shift must exist in database');
   assert.strictEqual(shiftRecord['Start Latitude'], 25.2533);
   assert.strictEqual(shiftRecord['Start Longitude'], 55.3652);
-  assert.strictEqual(shiftRecord['Start Photo Key'], 'photos/EMP001/start_test_001.jpg');
+  assert.strictEqual(shiftRecord['Start Photo Key'], validStartKey);
   assert.strictEqual(shiftRecord['Start Photo Verification Status'], 'Verified');
   assert.strictEqual(shiftRecord.Status, 'Active');
 });
 
-runTest('Reusing a previously used photo key is strictly rejected (anti-reuse)', () => {
-  const res = ShiftService.startShift({
-    employeeId: 'EMP003',
-    lat: 25.2533,
-    lon: 55.3652,
-    accuracy: 18,
-    photoKey: 'photos/EMP001/start_test_001.jpg' // Reused key!
-  });
-  assert.strictEqual(res.success, false);
-  assert.strictEqual(res.code, 409);
-  assert.ok(res.message.includes('already been used'));
-});
-
 runTest('Duplicate shift start is rejected while active shift exists', () => {
+  const anotherKey = `photos/EMP001/${testDate}/start_b2c3d4e5.jpg`;
+  const anotherProof = CryptoUtils.generateUploadProof(anotherKey, 'EMP001', validStartCapturedAt);
   const res = ShiftService.startShift({
     employeeId: 'EMP001',
     lat: 25.2533,
     lon: 55.3652,
     accuracy: 18,
-    photoKey: 'photos/EMP001/start_test_002.jpg'
+    photoKey: anotherKey,
+    photoCapturedAt: validStartCapturedAt,
+    photoProof: anotherProof
   });
   assert.strictEqual(res.success, false);
   assert.ok(res.message.includes('already have an active shift'));
@@ -403,6 +467,36 @@ runTest('End shift without selfie photo is rejected', () => {
   assert.ok(res.message.includes('Mandatory selfie photo verification is required to end a shift'));
 });
 
+runTest('End shift with start_ photo key is rejected with 400', () => {
+  const startKeyForEnd = `photos/EMP001/${testDate}/start_e5f6a7b8.jpg`;
+  const res = ShiftService.endShift({
+    employeeId: 'EMP001',
+    lat: 25.2533,
+    lon: 55.3652,
+    accuracy: 16,
+    photoKey: startKeyForEnd,
+    photoCapturedAt: validEndCapturedAt,
+    photoProof: validEndProof
+  });
+  assert.strictEqual(res.success, false);
+  assert.strictEqual(res.code, 400);
+  assert.ok(res.message.includes('Invalid end photo reference format'));
+});
+
+runTest('End shift with fabricated photo key (missing proof) is rejected with 403', () => {
+  const res = ShiftService.endShift({
+    employeeId: 'EMP001',
+    lat: 25.2533,
+    lon: 55.3652,
+    accuracy: 16,
+    photoKey: validEndKey,
+    photoCapturedAt: validEndCapturedAt
+  });
+  assert.strictEqual(res.success, false);
+  assert.strictEqual(res.code, 403);
+  assert.ok(res.message.includes('Invalid or missing photo upload proof'));
+});
+
 runTest('End shift completes shift, records photo key, and generates pending overtime record', () => {
   const currentShift = SheetsService.findById(SHEETS.SHIFTS, activeShiftId);
   currentShift['Start Time'] = new Date(Date.now() - (11 * 3600 * 1000)).toISOString();
@@ -412,15 +506,16 @@ runTest('End shift completes shift, records photo key, and generates pending ove
     lat: 25.2533,
     lon: 55.3652,
     accuracy: 16,
-    photoKey: 'photos/EMP001/end_test_001.jpg',
-    photoCapturedAt: new Date().toISOString()
+    photoKey: validEndKey,
+    photoCapturedAt: validEndCapturedAt,
+    photoProof: validEndProof
   });
 
   assert.strictEqual(res.success, true);
   assert.strictEqual(res.regularHours, 8);
   assert.ok(res.overtimeHours > 0, 'Must record overtime hours');
   assert.ok(res.overtimeId, 'Must generate overtime record ID');
-  assert.strictEqual(res.endPhotoKey, 'photos/EMP001/end_test_001.jpg');
+  assert.strictEqual(res.endPhotoKey, validEndKey);
   assert.strictEqual(res.endPhotoVerificationStatus, 'Verified');
 
   const otRecord = SheetsService.findById(SHEETS.OVERTIME, res.overtimeId);
@@ -428,9 +523,26 @@ runTest('End shift completes shift, records photo key, and generates pending ove
   assert.strictEqual(otRecord['Approval Status'], 'Pending');
 
   const shiftInDb = SheetsService.findById(SHEETS.SHIFTS, activeShiftId);
-  assert.strictEqual(shiftInDb['End Photo Key'], 'photos/EMP001/end_test_001.jpg');
+  assert.strictEqual(shiftInDb['End Photo Key'], validEndKey);
   assert.strictEqual(shiftInDb['End Photo Verification Status'], 'Verified');
   assert.strictEqual(shiftInDb.Status, 'Completed');
+});
+
+runTest('Reusing a previously used photo key is strictly rejected (anti-reuse)', () => {
+  const newCapturedAt = '2026-10-15T20:00:00.000Z';
+  const newProof = CryptoUtils.generateUploadProof(validStartKey, 'EMP001', newCapturedAt);
+  const res = ShiftService.startShift({
+    employeeId: 'EMP001',
+    lat: 25.2533,
+    lon: 55.3652,
+    accuracy: 18,
+    photoKey: validStartKey, // Reused key!
+    photoCapturedAt: newCapturedAt,
+    photoProof: newProof
+  });
+  assert.strictEqual(res.success, false);
+  assert.strictEqual(res.code, 409);
+  assert.ok(res.message.includes('already been used'));
 });
 
 runTest('Historical records without photos remain readable and are labelled as legacy records', () => {

@@ -284,6 +284,7 @@ export default function SelfieModal({
           },
           {
             photoKey: uploadRes.photoKey,
+            photoProof: uploadRes.photoProof,
             photoCapturedAt: uploadRes.capturedAt,
           }
         );
@@ -327,6 +328,7 @@ export default function SelfieModal({
           },
           {
             photoKey: uploadRes.photoKey,
+            photoProof: uploadRes.photoProof,
             photoCapturedAt: uploadRes.capturedAt,
           },
           breakMinutes

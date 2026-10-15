@@ -207,12 +207,19 @@ runTest('START SHIFT inside permitted geofence succeeds', () => {
   const insideLat = SITE1_LAT + 0.0001;
   const insideLon = SITE1_LON + 0.0001;
 
+  const testDate = '20261015';
+  const capturedAt = new Date().toISOString();
+  const startKey1 = `photos/EMP003/${testDate}/start_11111111.jpg`;
+  const startProof1 = CryptoUtils.generateUploadProof(startKey1, 'EMP003', capturedAt);
+
   const res = ShiftService.startShift({
     employeeId: 'EMP003',
     lat: insideLat,
     lon: insideLon,
     accuracy: 12,
-    photoKey: 'photos/EMP003/start_001.jpg'
+    photoKey: startKey1,
+    photoCapturedAt: capturedAt,
+    photoProof: startProof1
   });
 
   assert.strictEqual(res.success, true, 'Must succeed inside geofence');
@@ -229,21 +236,37 @@ runTest('START SHIFT inside permitted geofence succeeds', () => {
 
 runTest('START SHIFT outside permitted geofence is rejected with distance', () => {
   // End active shift for EMP003 first
+  const testDate = '20261015';
+  const capturedAt = new Date().toISOString();
   const active = ShiftService.getActiveShift('EMP003');
   if (active) {
-    ShiftService.endShift({ employeeId: 'EMP003', lat: SITE1_LAT, lon: SITE1_LON, accuracy: 10, photoKey: 'photos/EMP003/end_001.jpg' });
+    const endKey1 = `photos/EMP003/${testDate}/end_11111111.jpg`;
+    const endProof1 = CryptoUtils.generateUploadProof(endKey1, 'EMP003', capturedAt);
+    ShiftService.endShift({
+      employeeId: 'EMP003',
+      lat: SITE1_LAT,
+      lon: SITE1_LON,
+      accuracy: 10,
+      photoKey: endKey1,
+      photoCapturedAt: capturedAt,
+      photoProof: endProof1
+    });
   }
 
   // Coordinates far away (e.g. 5km away: 25.2500, 55.3000)
   const farLat = 25.2500;
   const farLon = 55.3000;
+  const startKey2 = `photos/EMP003/${testDate}/start_22222222.jpg`;
+  const startProof2 = CryptoUtils.generateUploadProof(startKey2, 'EMP003', capturedAt);
 
   const res = ShiftService.startShift({
     employeeId: 'EMP003',
     lat: farLat,
     lon: farLon,
     accuracy: 15,
-    photoKey: 'photos/EMP003/start_002.jpg'
+    photoKey: startKey2,
+    photoCapturedAt: capturedAt,
+    photoProof: startProof2
   });
 
   assert.strictEqual(res.success, false, 'Must be rejected when outside geofence');
@@ -279,19 +302,36 @@ runTest('Admin updateEmployee rejects nonexistent job site', () => {
 });
 
 runTest('Now-assigned labourer EMP001 can successfully START SHIFT', () => {
+  const testDate = '20261015';
+  const capturedAt = new Date().toISOString();
+  const startKey3 = `photos/EMP001/${testDate}/start_33333333.jpg`;
+  const startProof3 = CryptoUtils.generateUploadProof(startKey3, 'EMP001', capturedAt);
+
   const res = ShiftService.startShift({
     employeeId: 'EMP001',
     lat: SITE1_LAT,
     lon: SITE1_LON,
     accuracy: 10,
-    photoKey: 'photos/EMP001/start_002.jpg'
+    photoKey: startKey3,
+    photoCapturedAt: capturedAt,
+    photoProof: startProof3
   });
 
   assert.strictEqual(res.success, true, 'Shift start must now succeed');
   assert.strictEqual(res.siteId, 'SITE001');
 
   // End shift
-  ShiftService.endShift({ employeeId: 'EMP001', lat: SITE1_LAT, lon: SITE1_LON, accuracy: 10, photoKey: 'photos/EMP001/end_002.jpg' });
+  const endKey3 = `photos/EMP001/${testDate}/end_33333333.jpg`;
+  const endProof3 = CryptoUtils.generateUploadProof(endKey3, 'EMP001', capturedAt);
+  ShiftService.endShift({
+    employeeId: 'EMP001',
+    lat: SITE1_LAT,
+    lon: SITE1_LON,
+    accuracy: 10,
+    photoKey: endKey3,
+    photoCapturedAt: capturedAt,
+    photoProof: endProof3
+  });
 });
 
 runTest('Admin can reassign employee to SITE002 without altering previous shift site ID', () => {

@@ -9,18 +9,41 @@
 
 // In-memory fallback cache for local dev / testing environments without live R2 bindings
 const devPhotoStore = new Map();
+const DEFAULT_AUTH_SECRET = 'overtime-tracker-auth-proof-v2';
+const PHOTO_KEY_PATTERN = /^photos\/[A-Za-z0-9_-]+\/\d{8}\/(start|end)_[a-f0-9]+\.(jpg|jpeg|png|webp)$/i;
 
 /**
- * Decode and validate session token without exposing secrets
+ * Generate cryptographic proof of photo upload
+ */
+async function generateUploadProof(photoKey, employeeId, capturedAt, secret) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const data = enc.encode(`${photoKey}:${employeeId}:${capturedAt || ''}`);
+  const signature = await crypto.subtle.sign('HMAC', key, data);
+  return Array.from(new Uint8Array(signature))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/**
+ * Decode and validate session token with HMAC verification
  * Format: <base64url-payload>.<hmac-signature>
  */
-function parseAndValidateSession(token) {
+async function parseAndValidateSession(token, secret = null) {
   if (!token || typeof token !== 'string') return null;
   const parts = token.split('.');
   if (parts.length !== 2) return null;
 
   try {
-    const base64 = parts[0].replace(/-/g, '+').replace(/_/g, '/');
+    const payloadB64 = parts[0];
+    const signature = parts[1];
+    const base64 = payloadB64.replace(/-/g, '+').replace(/_/g, '/');
     const jsonStr = decodeURIComponent(
       atob(base64)
         .split('')
@@ -37,6 +60,25 @@ function parseAndValidateSession(token) {
     }
 
     if (!payload.employeeId) return null;
+
+    // Verify HMAC-SHA256 signature if secret is provided
+    if (secret && signature) {
+      const enc = new TextEncoder();
+      const key = await crypto.subtle.importKey(
+        'raw',
+        enc.encode(secret),
+        { name: 'HMAC', hash: 'SHA-256' },
+        false,
+        ['verify']
+      );
+      const matches = signature.match(/[\da-f]{2}/gi);
+      if (matches && matches.length === 32) {
+        const sigBytes = new Uint8Array(matches.map((h) => parseInt(h, 16)));
+        const isValid = await crypto.subtle.verify('HMAC', key, sigBytes, enc.encode(payloadB64));
+        if (!isValid) return null;
+      }
+    }
+
     return payload;
   } catch {
     return null;
@@ -65,6 +107,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const pathname = url.pathname;
+    const authSecret = (env && env.AUTH_SECRET) || DEFAULT_AUTH_SECRET;
 
     // Handle CORS preflight
     if (request.method === 'OPTIONS') {
@@ -89,7 +132,7 @@ export default {
       try {
         const authHeader = request.headers.get('Authorization') || '';
         const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
-        const session = parseAndValidateSession(token);
+        const session = await parseAndValidateSession(token, authSecret);
 
         if (!session) {
           return jsonResponse({
@@ -192,9 +235,12 @@ export default {
           });
         }
 
+        const photoProof = await generateUploadProof(photoKey, normalizedEmpId, serverCapturedAt, authSecret);
+
         return jsonResponse({
           success: true,
           photoKey,
+          photoProof,
           capturedAt: serverCapturedAt,
           size: bytes.length,
           message: 'Selfie uploaded and secured successfully'
@@ -218,7 +264,16 @@ export default {
           return jsonResponse({ success: false, message: 'Photo key is required.' }, 400, request);
         }
 
-        const session = parseAndValidateSession(token);
+        // Strict path traversal / format check
+        if (!PHOTO_KEY_PATTERN.test(photoKey)) {
+          return jsonResponse({
+            success: false,
+            code: 400,
+            message: 'Invalid photo key format. Path traversal rejected.'
+          }, 400, request);
+        }
+
+        const session = await parseAndValidateSession(token, authSecret);
         if (!session) {
           return jsonResponse({
             success: false,

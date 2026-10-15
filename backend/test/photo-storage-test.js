@@ -148,7 +148,9 @@ async function run() {
 
   let uploadedPhotoKey = null;
 
-  await runAsyncTest('Valid labourer selfie upload succeeds and saves to R2 bucket', async () => {
+  let uploadedProof = null;
+
+  await runAsyncTest('Valid labourer selfie upload succeeds, saves to R2 bucket, and returns cryptographic proof', async () => {
     const req = new Request('https://overtime-tracker.exp-tracker.workers.dev/api/photos/upload', {
       method: 'POST',
       headers: {
@@ -168,10 +170,37 @@ async function run() {
     assert.strictEqual(data.success, true);
     assert.ok(data.photoKey.startsWith('photos/EMP001/'), 'Must start with photos/EMP001/, got: ' + data.photoKey);
     assert.ok(data.photoKey.includes('/start_'));
+    assert.ok(data.photoProof, 'Must return cryptographic photoProof');
+    assert.strictEqual(typeof data.photoProof, 'string');
+    assert.strictEqual(data.photoProof.length, 64, 'Must be 64-char hex SHA256');
+
+    // Verify proof cryptographically matches
+    const isValidProof = CryptoUtils.verifyUploadProof(data.photoKey, 'EMP001', data.capturedAt, data.photoProof);
+    assert.strictEqual(isValidProof, true, 'Cryptographic upload proof must be valid');
+
     uploadedPhotoKey = data.photoKey;
+    uploadedProof = data.photoProof;
 
     // Verify item in R2 bucket
     assert.ok(mockBucketStorage.has(uploadedPhotoKey), 'Photo must be saved in R2 bucket');
+  });
+
+  await runAsyncTest('Upload with forged session token signature is rejected with 401', async () => {
+    const tamperedToken = labourerToken.slice(0, -6) + '000000';
+    const req = new Request('https://overtime-tracker.exp-tracker.workers.dev/api/photos/upload', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${tamperedToken}`
+      },
+      body: JSON.stringify({
+        imageBase64: sampleJpegBase64,
+        employeeId: 'EMP001',
+        type: 'start'
+      })
+    });
+    const res = await worker.fetch(req, mockEnv);
+    assert.strictEqual(res.status, 401);
   });
 
   console.log('\n[2. Photo Access Control & Secure Retrieval]');
@@ -180,6 +209,29 @@ async function run() {
     const req = new Request(`https://overtime-tracker.exp-tracker.workers.dev/api/photos/view?key=${uploadedPhotoKey}`);
     const res = await worker.fetch(req, mockEnv);
     assert.strictEqual(res.status, 401);
+  });
+
+  await runAsyncTest('Photo view with forged session token signature is rejected with 401', async () => {
+    const tamperedToken = labourerToken.slice(0, -6) + '000000';
+    const req = new Request(`https://overtime-tracker.exp-tracker.workers.dev/api/photos/view?key=${uploadedPhotoKey}&token=${tamperedToken}`);
+    const res = await worker.fetch(req, mockEnv);
+    assert.strictEqual(res.status, 401);
+  });
+
+  await runAsyncTest('Photo view with path traversal in key is rejected with 400', async () => {
+    const traversalKeys = [
+      'photos/EMP001/../../secret.txt',
+      'photos/EMP001/../evil.jpg',
+      'photos/EMP001/20261015/start_123.exe',
+      '../photos/EMP001/20261015/start_123.jpg'
+    ];
+    for (const key of traversalKeys) {
+      const req = new Request(`https://overtime-tracker.exp-tracker.workers.dev/api/photos/view?key=${encodeURIComponent(key)}&token=${adminToken}`);
+      const res = await worker.fetch(req, mockEnv);
+      assert.strictEqual(res.status, 400, `Key "${key}" must be rejected with 400`);
+      const body = await res.json();
+      assert.ok(body.message.includes('Invalid photo key format'));
+    }
   });
 
   await runAsyncTest('Unrelated labourer viewing another labourer photo is forbidden with 403', async () => {
@@ -203,8 +255,8 @@ async function run() {
     assert.strictEqual(res.headers.get('Content-Type'), 'image/jpeg');
   });
 
-  await runAsyncTest('Requesting nonexistent photo returns 404', async () => {
-    const req = new Request(`https://overtime-tracker.exp-tracker.workers.dev/api/photos/view?key=photos/EMP001/nonexistent.jpg&token=${adminToken}`);
+  await runAsyncTest('Requesting nonexistent photo with valid key format returns 404', async () => {
+    const req = new Request(`https://overtime-tracker.exp-tracker.workers.dev/api/photos/view?key=photos/EMP001/20261015/start_99999999.jpg&token=${adminToken}`);
     const res = await worker.fetch(req, mockEnv);
     assert.strictEqual(res.status, 404);
   });

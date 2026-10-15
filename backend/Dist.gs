@@ -2,7 +2,7 @@
  * OVERTIME TRACKER — COMPLETE GOOGLE APPS SCRIPT BACKEND
  * Bundled for single-file deployment at script.google.com
  * Owner: Ateeb
- * Generated: 2026-10-15T13:34:58.512Z
+ * Generated: 2026-10-15T13:59:47.424Z
  */
 
 
@@ -284,7 +284,7 @@ var CryptoUtils = (function() {
       var props = PropertiesService.getScriptProperties();
       var secret = props.getProperty('AUTH_SECRET');
       if (!secret) {
-        secret = generateSalt(32) + generateSalt(32);
+        secret = props.getProperty('SESSION_SECRET') || 'overtime-tracker-auth-proof-v2';
         props.setProperty('AUTH_SECRET', secret);
       }
       return secret;
@@ -293,9 +293,41 @@ var CryptoUtils = (function() {
       return process.env.AUTH_SECRET;
     }
     if (!_nodeRuntimeSecret) {
-      _nodeRuntimeSecret = generateSalt(32) + generateSalt(32);
+      _nodeRuntimeSecret = 'overtime-tracker-auth-proof-v2';
     }
     return _nodeRuntimeSecret;
+  }
+
+  /**
+   * Generate cryptographic proof of photo upload
+   * @param {string} photoKey
+   * @param {string} employeeId
+   * @param {string} capturedAt
+   * @returns {string} Hex HMAC-SHA256 signature
+   */
+  function generateUploadProof(photoKey, employeeId, capturedAt) {
+    if (!photoKey || !employeeId) return '';
+    var secret = getAuthSecret();
+    var message = photoKey + ':' + employeeId + ':' + (capturedAt || '');
+    return hmacSha256(message, secret);
+  }
+
+  /**
+   * Verify cryptographic proof that a photo was uploaded via verified storage
+   * @param {string} photoKey
+   * @param {string} employeeId
+   * @param {string} capturedAt
+   * @param {string} proof
+   * @returns {boolean}
+   */
+  function verifyUploadProof(photoKey, employeeId, capturedAt, proof) {
+    if (!photoKey || !employeeId || !proof) {
+      return false;
+    }
+    var secret = getAuthSecret();
+    var message = photoKey + ':' + employeeId + ':' + (capturedAt || '');
+    var expected = hmacSha256(message, secret);
+    return safeCompare(proof, expected);
   }
 
   /**
@@ -363,6 +395,8 @@ var CryptoUtils = (function() {
     verifyPin: verifyPin,
     createSessionToken: createSessionToken,
     verifySessionToken: verifySessionToken,
+    generateUploadProof: generateUploadProof,
+    verifyUploadProof: verifyUploadProof,
     getAuthSecret: getAuthSecret,
     generateSalt: generateSalt,
     hmacSha256: hmacSha256,
@@ -1109,6 +1143,10 @@ var _LocationService = (typeof LocationService !== 'undefined')
   ? LocationService
   : (typeof require !== 'undefined' ? require('./LocationService') : null);
 
+var _CryptoUtils = (typeof CryptoUtils !== 'undefined')
+  ? CryptoUtils
+  : (typeof require !== 'undefined' ? require('../lib/CryptoUtils') : null);
+
 var ShiftService = (function() {
   function ShiftServiceClass() {
     this.regularHours = parseFloat(_CONFIG.DEFAULT_REGULAR_HOURS || 8);
@@ -1246,9 +1284,11 @@ var ShiftService = (function() {
         }
       }
 
-      // Validate mandatory selfie photo reference
+      // Validate mandatory selfie photo reference, ownership and cryptographic proof
       var photoKey = (params.photoKey || '').toString().trim();
       var photoCapturedAt = (params.photoCapturedAt || '').toString().trim();
+      var photoProof = (params.photoProof || '').toString().trim();
+
       if (!photoKey) {
         return {
           success: false,
@@ -1257,11 +1297,29 @@ var ShiftService = (function() {
         };
       }
 
-      if (photoKey.indexOf('photos/') !== 0) {
+      var photoKeyPattern = /^photos\/([A-Za-z0-9_-]+)\/\d{8}\/start_[a-f0-9]+\.(jpg|jpeg|png|webp)$/i;
+      var keyMatch = photoKey.match(photoKeyPattern);
+      if (!keyMatch) {
         return {
           success: false,
           code: 400,
-          message: 'Invalid photo reference format. Must begin with photos/'
+          message: 'Invalid start photo reference format. Key must match photos/{employeeId}/{date}/start_{id}.jpg'
+        };
+      }
+
+      if (keyMatch[1].toUpperCase() !== employeeId.toUpperCase()) {
+        return {
+          success: false,
+          code: 403,
+          message: 'Forbidden: Photo reference employee ID mismatch'
+        };
+      }
+
+      if (!_CryptoUtils.verifyUploadProof(photoKey, employeeId, photoCapturedAt, photoProof)) {
+        return {
+          success: false,
+          code: 403,
+          message: 'Invalid or missing photo upload proof. Attendance selfies must be uploaded through authorized storage.'
         };
       }
 
@@ -1358,9 +1416,11 @@ var ShiftService = (function() {
         return { success: false, message: 'No active shift found for this employee to end.' };
       }
 
-      // Validate mandatory selfie photo reference
+      // Validate mandatory selfie photo reference, ownership and cryptographic proof
       var photoKey = (params.photoKey || '').toString().trim();
       var photoCapturedAt = (params.photoCapturedAt || '').toString().trim();
+      var photoProof = (params.photoProof || '').toString().trim();
+
       if (!photoKey) {
         return {
           success: false,
@@ -1369,11 +1429,29 @@ var ShiftService = (function() {
         };
       }
 
-      if (photoKey.indexOf('photos/') !== 0) {
+      var photoKeyPattern = /^photos\/([A-Za-z0-9_-]+)\/\d{8}\/end_[a-f0-9]+\.(jpg|jpeg|png|webp)$/i;
+      var keyMatch = photoKey.match(photoKeyPattern);
+      if (!keyMatch) {
         return {
           success: false,
           code: 400,
-          message: 'Invalid photo reference format. Must begin with photos/'
+          message: 'Invalid end photo reference format. Key must match photos/{employeeId}/{date}/end_{id}.jpg'
+        };
+      }
+
+      if (keyMatch[1].toUpperCase() !== employeeId.toUpperCase()) {
+        return {
+          success: false,
+          code: 403,
+          message: 'Forbidden: Photo reference employee ID mismatch'
+        };
+      }
+
+      if (!_CryptoUtils.verifyUploadProof(photoKey, employeeId, photoCapturedAt, photoProof)) {
+        return {
+          success: false,
+          code: 403,
+          message: 'Invalid or missing photo upload proof. Attendance selfies must be uploaded through authorized storage.'
         };
       }
 

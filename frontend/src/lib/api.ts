@@ -81,7 +81,9 @@ export interface ShiftRecord {
 
 import { logDiagnostic, maskEmployeeId } from './diagnostics';
 
-const GAS_URL = process.env.NEXT_PUBLIC_GAS_WEB_APP_URL || '';
+const GAS_URL =
+  process.env.NEXT_PUBLIC_GAS_WEB_APP_URL ||
+  'https://script.google.com/macros/s/AKfycbzAsJfsSviCiq47tTG6srTqAo4yZTFaGZDG0SQOPZjWNHdMSiyI8ELfuk2FmQ39QPcP/exec';
 
 /**
  * Normalize employee IDs to standard sequential format (e.g. 1 -> EMP001, EMP1 -> EMP001, 0 -> EMP000)
@@ -338,6 +340,7 @@ export async function login(employeeId: string, pin: string): Promise<LoginRespo
 export interface PhotoUploadResponse {
   success: boolean;
   photoKey?: string;
+  photoProof?: string;
   capturedAt?: string;
   size?: number;
   message?: string;
@@ -394,7 +397,7 @@ export async function startShift(
   employeeId: string,
   siteId: string,
   coords: { lat: number; lon: number; accuracy: number },
-  photo: { photoKey: string; photoCapturedAt?: string }
+  photo: { photoKey: string; photoProof?: string; photoCapturedAt?: string }
 ): Promise<ApiResponse<{ shiftId: string; photoKey?: string; photoVerificationStatus?: string }>> {
   return sendGasRequest<{ shiftId: string; photoKey?: string; photoVerificationStatus?: string }>({
     action: 'startShift',
@@ -405,6 +408,7 @@ export async function startShift(
     longitude: coords.lon,
     accuracy: coords.accuracy,
     photoKey: photo.photoKey,
+    photoProof: photo.photoProof,
     photoCapturedAt: photo.photoCapturedAt || new Date().toISOString(),
   });
 }
@@ -416,7 +420,7 @@ export async function endShift(
   token: string,
   employeeId: string,
   coords: { lat: number; lon: number; accuracy: number },
-  photo: { photoKey: string; photoCapturedAt?: string },
+  photo: { photoKey: string; photoProof?: string; photoCapturedAt?: string },
   breakMinutes: number = 60
 ): Promise<ApiResponse<{ shiftId: string; overtimeHours?: number; endPhotoKey?: string; endPhotoVerificationStatus?: string }>> {
   return sendGasRequest<{ shiftId: string; overtimeHours?: number; endPhotoKey?: string; endPhotoVerificationStatus?: string }>({
@@ -427,6 +431,7 @@ export async function endShift(
     longitude: coords.lon,
     accuracy: coords.accuracy,
     photoKey: photo.photoKey,
+    photoProof: photo.photoProof,
     photoCapturedAt: photo.photoCapturedAt || new Date().toISOString(),
     breakMinutes,
   });
