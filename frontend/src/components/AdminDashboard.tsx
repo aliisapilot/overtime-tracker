@@ -1686,8 +1686,19 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
           token={session.token}
           siteToEdit={selectedSiteToEdit}
           onClose={() => setShowSiteModal(false)}
-          onSaved={(msg) => {
+          onSaved={(msg, savedSite) => {
             setActionMessage({ type: 'success', text: msg });
+            if (savedSite) {
+              const savedId = savedSite.ID || savedSite.id;
+              if (savedId) {
+                setJobSites((current) => {
+                  const index = current.findIndex((site) => (site.ID || site.id) === savedId);
+                  return index === -1
+                    ? [...current, savedSite]
+                    : current.map((site, i) => i === index ? { ...site, ...savedSite } : site);
+                });
+              }
+            }
             setShowSiteModal(false);
             setSelectedSiteToEdit(null);
             handleRefresh();
