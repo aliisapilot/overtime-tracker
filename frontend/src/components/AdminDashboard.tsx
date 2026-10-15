@@ -112,6 +112,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshVersion, setRefreshVersion] = useState(0);
+  const [employeesLoaded, setEmployeesLoaded] = useState(false);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
   const [attendanceLoading, setAttendanceLoading] = useState(false);
   const [attendanceLoaded, setAttendanceLoaded] = useState(false);
@@ -245,6 +246,22 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
         setNewEmpPhone('');
         setNewEmpPin('');
         setNewEmpSiteId('');
+        // The write is confirmed by the server. Show the new employee now,
+        // without waiting for a potentially slow follow-up Sheets read.
+        if (assignedId !== 'Registered') {
+          const confirmed = (res as { employee?: Partial<EmployeeProfile> }).employee;
+          setEmployees((previous) => previous.some((emp) => emp.id === assignedId)
+            ? previous
+            : [...previous, {
+                id: assignedId,
+                name: confirmed?.name || newEmpName.trim(),
+                phone: confirmed?.phone || newEmpPhone.trim(),
+                role: 'Labourer',
+                siteId: confirmed?.siteId || newEmpSiteId.trim(),
+                status: confirmed?.status || 'Active',
+              } as EmployeeProfile]);
+          setEmployeesLoaded(true);
+        }
         handleRefresh();
       } else {
         setActionMessage({ type: 'error', text: res.message || 'Failed to create employee' });
@@ -393,23 +410,29 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
       // Single unified round-trip to Google Apps Script eliminating cold-start 35s timeout
       const res = await getAdminDashboardData(session.token);
       if (res.success && res.data) {
-        if (Array.isArray(res.data.employees)) setEmployees(res.data.employees);
+        if (Array.isArray(res.data.employees)) {
+          setEmployees(res.data.employees);
+          setEmployeesLoaded(true);
+        }
         if (Array.isArray(res.data.jobSites)) setJobSites(res.data.jobSites);
         if (Array.isArray(res.data.pendingOvertime)) setOvertimeList(res.data.pendingOvertime as OvertimeItem[]);
         if (typeof res.data.activeShiftsCount === 'number') setActiveShiftsCount(res.data.activeShiftsCount);
         if (typeof res.data.todayShiftsCount === 'number') setTodayShiftsCount(res.data.todayShiftsCount);
       } else {
         // Fallback to separate getEmployees if unified endpoint is not deployed yet
-        const empRes = await getEmployees(session.token);
-        if (empRes.success && Array.isArray(empRes.employees)) {
-          setEmployees(empRes.employees);
-        } else {
-          setDashboardError(empRes.message || 'Unable to retrieve employee data from server.');
-        }
-        const [siteRes, otRes] = await Promise.allSettled([
+        const [empResult, siteRes, otRes] = await Promise.allSettled([
+          getEmployees(session.token),
           getJobSites(session.token),
           getPendingOvertime(session.token),
         ]);
+        if (empResult.status === 'fulfilled' && empResult.value.success && Array.isArray(empResult.value.employees)) {
+          setEmployees(empResult.value.employees);
+          setEmployeesLoaded(true);
+        } else {
+          setDashboardError(empResult.status === 'fulfilled'
+            ? (empResult.value.message || 'Unable to retrieve employee data from server.')
+            : 'Unable to retrieve employee data from server.');
+        }
         if (siteRes.status === 'fulfilled' && siteRes.value.success && Array.isArray(siteRes.value.sites)) {
           setJobSites(siteRes.value.sites);
         }
@@ -578,7 +601,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
         <div className="glass-card rounded-2xl p-4">
           <span className="text-xs font-medium text-slate-400 block mb-1">Total Employees</span>
           <span className="text-2xl font-bold text-white font-mono">
-            {loading ? '…' : dashboardError ? '—' : employees.length}
+            {!employeesLoaded ? '…' : employees.length}
           </span>
         </div>
         <div className="glass-card rounded-2xl p-4 border-emerald-500/20 bg-emerald-500/5">
@@ -1162,7 +1185,11 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                   </button>
                 </div>
                 {employees.length === 0 ? (
-                  <p className="text-sm text-slate-500 py-8 text-center">No employee records found in Google Sheets.</p>
+                  <p className="text-sm text-slate-500 py-8 text-center">
+                    {!employeesLoaded
+                      ? (dashboardError ? 'Unable to load employees. Please retry Sync Data.' : 'Loading employee records…')
+                      : 'No employee records found in Google Sheets.'}
+                  </p>
                 ) : (
                   <div className="overflow-x-auto">
                     <table className="w-full text-left text-xs text-slate-300">
