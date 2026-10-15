@@ -2,7 +2,7 @@
  * OVERTIME TRACKER — COMPLETE GOOGLE APPS SCRIPT BACKEND
  * Bundled for single-file deployment at script.google.com
  * Owner: Ateeb
- * Generated: 2026-10-10T20:25:10.327Z
+ * Generated: 2026-10-15T13:34:58.512Z
  */
 
 
@@ -28,7 +28,9 @@ var CONFIG = {
   PBKDF2_ITERATIONS: 25000, // Strengthened PBKDF2 iterations for PIN security
   SALT_LENGTH: 32, // 256-bit salt entropy
   ADMIN_ROLE: 'Admin',
-  LABOURER_ROLE: 'Labourer'
+  LABOURER_ROLE: 'Labourer',
+  PHOTO_KEY_PREFIX: 'photos/',
+  PHOTO_MAX_SIZE_BYTES: 5 * 1024 * 1024 // 5MB limit
 };
 
 var SHEETS = {
@@ -395,6 +397,7 @@ var SheetsService = (function() {
   function SheetsServiceClass() {
     this._mockData = null; // Used for local Node tests
     this._rowCache = {};   // Per-request in-memory cache: { sheetName: rows[] }
+    this._spreadsheet = null;
   }
 
   /**
@@ -409,8 +412,12 @@ var SheetsService = (function() {
    * @returns {GoogleAppsScript.Spreadsheet.Spreadsheet}
    */
   SheetsServiceClass.prototype.getSpreadsheet = function() {
+    if (this._spreadsheet) {
+      return this._spreadsheet;
+    }
     if (typeof SpreadsheetApp !== 'undefined') {
-      return SpreadsheetApp.getActiveSpreadsheet();
+      this._spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+      return this._spreadsheet;
     }
     return null;
   };
@@ -454,13 +461,15 @@ var SheetsService = (function() {
       'ID', 'Name', 'Address', 'Latitude', 'Longitude', 'Geofence Radius', 'Status', 'Created At'
     ]);
 
-    // 3. Shifts sheet
+    // 3. Shifts sheet (Extended with photo verification fields)
     var shiftsSheet = this.getOrCreateSheet(_SHEETS.SHIFTS);
     this.ensureHeaders(shiftsSheet, [
       'ID', 'Employee ID', 'Site ID', 'Start Time', 'End Time',
       'Start Latitude', 'Start Longitude', 'Start Accuracy',
       'End Latitude', 'End Longitude', 'End Accuracy',
-      'Break Minutes', 'Regular Hours', 'Overtime Hours', 'Status', 'Created At'
+      'Break Minutes', 'Regular Hours', 'Overtime Hours', 'Status', 'Created At',
+      'Start Photo Key', 'Start Photo Captured At', 'Start Photo Verification Status',
+      'End Photo Key', 'End Photo Captured At', 'End Photo Verification Status'
     ]);
 
     // 4. Overtime sheet
@@ -508,7 +517,8 @@ var SheetsService = (function() {
   };
 
   /**
-   * Ensure sheet has required headers without deleting data
+   * Ensure sheet has required headers without deleting data.
+   * If existing columns are present, any missing headers are safely appended to row 1.
    */
   SheetsServiceClass.prototype.ensureHeaders = function(sheet, headers) {
     if (!sheet) return;
@@ -525,7 +535,7 @@ var SheetsService = (function() {
       return;
     }
 
-    var range = sheet.getRange(1, 1, 1, Math.max(lastCol, headers.length));
+    var range = sheet.getRange(1, 1, 1, lastCol);
     var existingHeaders = range.getValues()[0];
     var isBlank = existingHeaders.every(function(h) { return h === ''; });
 
@@ -536,6 +546,24 @@ var SheetsService = (function() {
       headerRange.setBackground('#1e3a8a');
       headerRange.setFontColor('#ffffff');
       sheet.setFrozenRows(1);
+      return;
+    }
+
+    // Safely append any missing columns at the end of row 1 without altering existing data rows
+    var missingHeaders = [];
+    headers.forEach(function(h) {
+      if (existingHeaders.indexOf(h) === -1) {
+        missingHeaders.push(h);
+      }
+    });
+
+    if (missingHeaders.length > 0) {
+      var newColStart = lastCol + 1;
+      var newHeaderRange = sheet.getRange(1, newColStart, 1, missingHeaders.length);
+      newHeaderRange.setValues([missingHeaders]);
+      newHeaderRange.setFontWeight('bold');
+      newHeaderRange.setBackground('#1e3a8a');
+      newHeaderRange.setFontColor('#ffffff');
     }
   };
 
@@ -1218,6 +1246,39 @@ var ShiftService = (function() {
         }
       }
 
+      // Validate mandatory selfie photo reference
+      var photoKey = (params.photoKey || '').toString().trim();
+      var photoCapturedAt = (params.photoCapturedAt || '').toString().trim();
+      if (!photoKey) {
+        return {
+          success: false,
+          code: 400,
+          message: 'Mandatory selfie photo verification is required to start a shift'
+        };
+      }
+
+      if (photoKey.indexOf('photos/') !== 0) {
+        return {
+          success: false,
+          code: 400,
+          message: 'Invalid photo reference format. Must begin with photos/'
+        };
+      }
+
+      // Photo reference anti-reuse verification across all shifts
+      var allShifts = _SheetsService.getAllShifts();
+      var isPhotoReused = allShifts.some(function(s) {
+        return (s['Start Photo Key'] && s['Start Photo Key'] === photoKey) ||
+               (s['End Photo Key'] && s['End Photo Key'] === photoKey);
+      });
+      if (isPhotoReused) {
+        return {
+          success: false,
+          code: 409,
+          message: 'Photo reference has already been used. Please take a fresh selfie.'
+        };
+      }
+
       // Generate server timestamp
       var serverStartTime = new Date().toISOString();
       var shiftId = _SheetsService.generateShiftId();
@@ -1238,11 +1299,17 @@ var ShiftService = (function() {
         'Regular Hours': 0,
         'Overtime Hours': 0,
         Status: 'Active',
-        'Created At': serverStartTime
+        'Created At': serverStartTime,
+        'Start Photo Key': photoKey,
+        'Start Photo Captured At': photoCapturedAt || serverStartTime,
+        'Start Photo Verification Status': 'Verified',
+        'End Photo Key': '',
+        'End Photo Captured At': '',
+        'End Photo Verification Status': ''
       };
 
       _SheetsService.appendRow(_SHEETS.SHIFTS, shiftData);
-      this.logAudit(employeeId, 'start_shift', 'success', 'Started shift ' + shiftId + ' at site ' + siteId + ' (GPS: ' + lat + ', ' + lon + ')');
+      this.logAudit(employeeId, 'start_shift', 'success', 'Started shift ' + shiftId + ' at site ' + siteId + ' (GPS: ' + lat + ', ' + lon + ', Photo: ' + photoKey + ')');
 
       return {
         success: true,
@@ -1253,6 +1320,8 @@ var ShiftService = (function() {
         lat: lat,
         lon: lon,
         accuracy: accuracy,
+        photoKey: photoKey,
+        photoVerificationStatus: 'Verified',
         message: 'Shift started successfully'
       };
     } catch (err) {
@@ -1289,6 +1358,39 @@ var ShiftService = (function() {
         return { success: false, message: 'No active shift found for this employee to end.' };
       }
 
+      // Validate mandatory selfie photo reference
+      var photoKey = (params.photoKey || '').toString().trim();
+      var photoCapturedAt = (params.photoCapturedAt || '').toString().trim();
+      if (!photoKey) {
+        return {
+          success: false,
+          code: 400,
+          message: 'Mandatory selfie photo verification is required to end a shift'
+        };
+      }
+
+      if (photoKey.indexOf('photos/') !== 0) {
+        return {
+          success: false,
+          code: 400,
+          message: 'Invalid photo reference format. Must begin with photos/'
+        };
+      }
+
+      // Anti-reuse verification across all shifts
+      var allShifts = _SheetsService.getAllShifts();
+      var isPhotoReused = allShifts.some(function(s) {
+        return (s['Start Photo Key'] && s['Start Photo Key'] === photoKey) ||
+               (s['End Photo Key'] && s['End Photo Key'] === photoKey);
+      });
+      if (isPhotoReused) {
+        return {
+          success: false,
+          code: 409,
+          message: 'Photo reference has already been used. Please take a fresh selfie.'
+        };
+      }
+
       // Server-side clock out timestamp
       var serverEndTime = new Date().toISOString();
 
@@ -1303,11 +1405,14 @@ var ShiftService = (function() {
         'End Accuracy': !isNaN(accuracy) ? accuracy : '',
         'Regular Hours': hoursCalc.regularHours,
         'Overtime Hours': hoursCalc.overtimeHours,
-        Status: 'Completed'
+        Status: 'Completed',
+        'End Photo Key': photoKey,
+        'End Photo Captured At': photoCapturedAt || serverEndTime,
+        'End Photo Verification Status': 'Verified'
       };
 
       _SheetsService.updateRow(_SHEETS.SHIFTS, activeShift.ID, updateData);
-      this.logAudit(employeeId, 'end_shift', 'success', 'Ended shift ' + activeShift.ID + ' (GPS: ' + lat + ', ' + lon + ')');
+      this.logAudit(employeeId, 'end_shift', 'success', 'Ended shift ' + activeShift.ID + ' (GPS: ' + lat + ', ' + lon + ', Photo: ' + photoKey + ')');
 
       // Create pending overtime record if overtime was performed
       var overtimeId = null;
@@ -1327,6 +1432,8 @@ var ShiftService = (function() {
         regularHours: hoursCalc.regularHours,
         overtimeHours: hoursCalc.overtimeHours,
         overtimeId: overtimeId,
+        endPhotoKey: photoKey,
+        endPhotoVerificationStatus: 'Verified',
         message: 'Shift ended successfully'
       };
     } catch (err) {
@@ -1403,11 +1510,33 @@ var ShiftService = (function() {
   };
 
   /**
+   * Helper to normalize shift photo metadata and label legacy records
+   */
+  ShiftServiceClass.prototype._normalizeShift = function(s) {
+    if (!s) return s;
+    var hasStartPhoto = Boolean(s['Start Photo Key']);
+    var hasEndPhoto = Boolean(s['End Photo Key']);
+    var isCompleted = s.Status === 'Completed';
+
+    return Object.assign({}, s, {
+      startPhotoKey: s['Start Photo Key'] || '',
+      startPhotoCapturedAt: s['Start Photo Captured At'] || '',
+      startPhotoStatus: hasStartPhoto ? (s['Start Photo Verification Status'] || 'Verified') : 'Legacy Record',
+      endPhotoKey: s['End Photo Key'] || '',
+      endPhotoCapturedAt: s['End Photo Captured At'] || '',
+      endPhotoStatus: hasEndPhoto ? (s['End Photo Verification Status'] || 'Verified') : (isCompleted ? 'Legacy Record' : 'Pending')
+    });
+  };
+
+  /**
    * Get shifts for employee
    */
   ShiftServiceClass.prototype.getEmployeeShifts = function(employeeId) {
     var all = _SheetsService.getAllShifts();
-    return all.filter(function(s) { return s['Employee ID'] === employeeId; });
+    var self = this;
+    return all
+      .filter(function(s) { return s['Employee ID'] === employeeId; })
+      .map(function(s) { return self._normalizeShift(s); });
   };
 
   /**
@@ -1452,9 +1581,10 @@ var ShiftService = (function() {
 
       // Single read of Shifts sheet (cached)
       var allShifts = _SheetsService.getAllShifts();
-      var employeeShifts = allShifts.filter(function(s) {
-        return String(s['Employee ID']) === employeeId;
-      });
+      var self = this;
+      var employeeShifts = allShifts
+        .filter(function(s) { return String(s['Employee ID']) === employeeId; })
+        .map(function(s) { return self._normalizeShift(s); });
 
       var activeShift = null;
       for (var i = 0; i < employeeShifts.length; i++) {
@@ -2064,6 +2194,10 @@ var AdminService = (function() {
       });
 
       var attendance = filtered.map(function(s) {
+        var hasStartPhoto = Boolean(s['Start Photo Key']);
+        var hasEndPhoto = Boolean(s['End Photo Key']);
+        var isCompleted = s.Status === 'Completed';
+
         return {
           shiftId: s.ID,
           employeeId: s['Employee ID'],
@@ -2081,7 +2215,13 @@ var AdminService = (function() {
           breakMinutes: parseFloat(s['Break Minutes'] || 0),
           regularHours: parseFloat(s['Regular Hours'] || 0),
           overtimeHours: parseFloat(s['Overtime Hours'] || 0),
-          status: s.Status
+          status: s.Status,
+          startPhotoKey: s['Start Photo Key'] || '',
+          startPhotoCapturedAt: s['Start Photo Captured At'] || '',
+          startPhotoStatus: hasStartPhoto ? (s['Start Photo Verification Status'] || 'Verified') : 'Legacy Record',
+          endPhotoKey: s['End Photo Key'] || '',
+          endPhotoCapturedAt: s['End Photo Captured At'] || '',
+          endPhotoStatus: hasEndPhoto ? (s['End Photo Verification Status'] || 'Verified') : (isCompleted ? 'Legacy Record' : 'Pending')
         };
       });
 
@@ -2288,6 +2428,66 @@ var AdminService = (function() {
       };
     } catch (error) {
       return { success: false, message: 'Failed to generate monthly report: ' + (error.message || error) };
+    }
+  };
+
+  /**
+   * Combined Admin Dashboard Data Endpoint
+   * Returns workforce, job sites, pending overtime, and active shift counts in a single call.
+   * Significantly reduces round-trips and eliminates cold-start timeouts from parallel requests.
+   */
+  AdminServiceClass.prototype.getAdminDashboardData = function(params) {
+    try {
+      var employees = _SheetsService.getAllEmployees();
+      var jobSites = _SheetsService.getAllJobSites();
+      var shifts = _SheetsService.getAllShifts();
+      var overtime = _SheetsService.getAllOvertime();
+
+      var pendingOvertime = overtime.filter(function(o) {
+        return (o['Approval Status'] || o.ApprovalStatus) === 'Pending';
+      });
+
+      var activeShifts = shifts.filter(function(s) {
+        return s.Status === 'Active' || !s['End Time'];
+      });
+
+      var todayStr = new Date().toISOString().split('T')[0];
+      var todayShifts = shifts.filter(function(s) {
+        return s['Start Time'] && s['Start Time'].indexOf(todayStr) === 0;
+      });
+
+      return {
+        success: true,
+        employees: employees.map(function(e) {
+          return {
+            id: e.ID,
+            name: e.Name,
+            phone: e.Phone || '',
+            role: e.Role || 'Labourer',
+            siteId: e['Site ID'] || e.SiteID || '',
+            status: e.Status || 'Active',
+            createdAt: e['Created At'] || '',
+            lastAccessed: e['Last Accessed'] || ''
+          };
+        }),
+        jobSites: jobSites.map(function(s) {
+          return {
+            id: s.ID,
+            name: s.Name,
+            address: s.Address || '',
+            lat: s.Latitude ? parseFloat(s.Latitude) : null,
+            lon: s.Longitude ? parseFloat(s.Longitude) : null,
+            geofenceRadius: s['Geofence Radius'] ? parseFloat(s['Geofence Radius']) : (_CONFIG.DEFAULT_GEOFENCE_RADIUS || 100),
+            status: s.Status || 'Active'
+          };
+        }),
+        pendingOvertime: pendingOvertime,
+        activeShiftsCount: activeShifts.length,
+        todayShiftsCount: todayShifts.length,
+        totalEmployeesCount: employees.length
+      };
+    } catch (error) {
+      return { success: false, message: 'Failed to load admin dashboard data: ' + (error.message || error) };
     }
   };
 
@@ -2822,6 +3022,8 @@ function doPost(e) {
     }
 
     switch (action) {
+      case 'getAdminDashboardData':
+        return jsonResponse(_AdminService.getAdminDashboardData(params));
       case 'getJobSites':
         return jsonResponse(_AdminService.getJobSites(params));
       case 'createJobSite':

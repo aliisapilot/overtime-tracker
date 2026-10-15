@@ -1,11 +1,35 @@
 # Project Status
 
-**Last Updated**: 2026-10-11
-**Version**: 1.7.0 (Employee Job Site Assignment & Geofence Verification Workflow, Admin Site Management, Production Cloudflare Deployment)
+**Last Updated**: 2026-10-15
+**Version**: 2.0.0 (Mandatory Selfie & Fresh Single-Action GPS Attendance Upgrade, Cloudflare R2 Private Photo Storage, Consolidated Admin Dashboard)
 
 ---
 
 ## Completed Features
+
+### Version 2.0.0 Highlights (Attendance Upgrade)
+- [x] **Mandatory Selfie Verification Flow**:
+  - Labourers must capture a live front-facing selfie to Start Shift and End Shift.
+  - Interactive camera modal with oval alignment guide, canvas compression (~60-90KB JPEG), and instant preview with Retake/Confirm buttons.
+  - Completely halts camera hardware tracks immediately after capture/cancellation to protect battery and prevent background resource usage.
+  - Strict anti-reuse validation: every photo key is recorded uniquely on backend and cannot be replayed for subsequent shifts.
+- [x] **Zero Continuous Location Tracking**:
+  - Completely eliminated all background GPS polling and continuous `watchPosition()`.
+  - Fresh high-accuracy geolocation (`maximumAge: 0`, <= 30m accuracy) is requested strictly on-demand when starting shift, ending shift, or manually refreshing.
+  - Clean hardware shutdown upon completion of attendance action.
+- [x] **Private Cloudflare R2 Photo Storage**:
+  - Direct authenticated upload endpoint (`POST /api/photos/upload`) via Cloudflare Worker.
+  - Authorized image retrieval (`GET /api/photos/view`) with ownership verification (Admin or photo owner only).
+  - Private R2 bucket binding with in-memory dev fallback; zero base64 images stored in Google Sheets.
+- [x] **Consolidated Fast Admin Dashboard (Timeout Prevention)**:
+  - Collapsed 4-5 parallel Google Apps Script calls into a single unified endpoint `getAdminDashboardData`.
+  - Fixes the 35-second cold-start timeout issue without suppressing errors.
+  - Resilient UI distinguishing loading, genuine empty results, and network/timeout errors (shows retry banner instead of false "0 Employees").
+  - Rich attendance ledger rendering: Employee Name & ID, Job Site, Start Time + Selfie Preview + GPS link + accuracy badge, End Time + Selfie Preview + GPS link + accuracy badge, Shift Duration, Regular / Overtime hours, and Status.
+  - Comprehensive CSV export including GPS accuracy and photo verification statuses.
+- [x] **Backward-Compatible Schema & Legacy Records**:
+  - Extended `Shifts` sheet schema safely with `Start Photo Key`, `Start Photo Captured At`, `Start Photo Verification Status`, `End Photo Key`, `End Photo Captured At`, `End Photo Verification Status`.
+  - Non-destructive schema migration (`ensureHeaders`); existing historical shifts without photos remain readable and are labelled as `Legacy Record`.
 
 ### Frontend (Next.js 14 + TypeScript + Tailwind CSS)
 - [x] **First-Attempt Login Reliability & Cold-Start UX**:

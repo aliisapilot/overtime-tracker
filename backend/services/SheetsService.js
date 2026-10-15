@@ -19,6 +19,7 @@ var SheetsService = (function() {
   function SheetsServiceClass() {
     this._mockData = null; // Used for local Node tests
     this._rowCache = {};   // Per-request in-memory cache: { sheetName: rows[] }
+    this._spreadsheet = null;
   }
 
   /**
@@ -33,8 +34,12 @@ var SheetsService = (function() {
    * @returns {GoogleAppsScript.Spreadsheet.Spreadsheet}
    */
   SheetsServiceClass.prototype.getSpreadsheet = function() {
+    if (this._spreadsheet) {
+      return this._spreadsheet;
+    }
     if (typeof SpreadsheetApp !== 'undefined') {
-      return SpreadsheetApp.getActiveSpreadsheet();
+      this._spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+      return this._spreadsheet;
     }
     return null;
   };
@@ -78,13 +83,15 @@ var SheetsService = (function() {
       'ID', 'Name', 'Address', 'Latitude', 'Longitude', 'Geofence Radius', 'Status', 'Created At'
     ]);
 
-    // 3. Shifts sheet
+    // 3. Shifts sheet (Extended with photo verification fields)
     var shiftsSheet = this.getOrCreateSheet(_SHEETS.SHIFTS);
     this.ensureHeaders(shiftsSheet, [
       'ID', 'Employee ID', 'Site ID', 'Start Time', 'End Time',
       'Start Latitude', 'Start Longitude', 'Start Accuracy',
       'End Latitude', 'End Longitude', 'End Accuracy',
-      'Break Minutes', 'Regular Hours', 'Overtime Hours', 'Status', 'Created At'
+      'Break Minutes', 'Regular Hours', 'Overtime Hours', 'Status', 'Created At',
+      'Start Photo Key', 'Start Photo Captured At', 'Start Photo Verification Status',
+      'End Photo Key', 'End Photo Captured At', 'End Photo Verification Status'
     ]);
 
     // 4. Overtime sheet
@@ -132,7 +139,8 @@ var SheetsService = (function() {
   };
 
   /**
-   * Ensure sheet has required headers without deleting data
+   * Ensure sheet has required headers without deleting data.
+   * If existing columns are present, any missing headers are safely appended to row 1.
    */
   SheetsServiceClass.prototype.ensureHeaders = function(sheet, headers) {
     if (!sheet) return;
@@ -149,7 +157,7 @@ var SheetsService = (function() {
       return;
     }
 
-    var range = sheet.getRange(1, 1, 1, Math.max(lastCol, headers.length));
+    var range = sheet.getRange(1, 1, 1, lastCol);
     var existingHeaders = range.getValues()[0];
     var isBlank = existingHeaders.every(function(h) { return h === ''; });
 
@@ -160,6 +168,24 @@ var SheetsService = (function() {
       headerRange.setBackground('#1e3a8a');
       headerRange.setFontColor('#ffffff');
       sheet.setFrozenRows(1);
+      return;
+    }
+
+    // Safely append any missing columns at the end of row 1 without altering existing data rows
+    var missingHeaders = [];
+    headers.forEach(function(h) {
+      if (existingHeaders.indexOf(h) === -1) {
+        missingHeaders.push(h);
+      }
+    });
+
+    if (missingHeaders.length > 0) {
+      var newColStart = lastCol + 1;
+      var newHeaderRange = sheet.getRange(1, newColStart, 1, missingHeaders.length);
+      newHeaderRange.setValues([missingHeaders]);
+      newHeaderRange.setFontWeight('bold');
+      newHeaderRange.setBackground('#1e3a8a');
+      newHeaderRange.setFontColor('#ffffff');
     }
   };
 

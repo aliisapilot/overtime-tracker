@@ -155,6 +155,39 @@ var ShiftService = (function() {
         }
       }
 
+      // Validate mandatory selfie photo reference
+      var photoKey = (params.photoKey || '').toString().trim();
+      var photoCapturedAt = (params.photoCapturedAt || '').toString().trim();
+      if (!photoKey) {
+        return {
+          success: false,
+          code: 400,
+          message: 'Mandatory selfie photo verification is required to start a shift'
+        };
+      }
+
+      if (photoKey.indexOf('photos/') !== 0) {
+        return {
+          success: false,
+          code: 400,
+          message: 'Invalid photo reference format. Must begin with photos/'
+        };
+      }
+
+      // Photo reference anti-reuse verification across all shifts
+      var allShifts = _SheetsService.getAllShifts();
+      var isPhotoReused = allShifts.some(function(s) {
+        return (s['Start Photo Key'] && s['Start Photo Key'] === photoKey) ||
+               (s['End Photo Key'] && s['End Photo Key'] === photoKey);
+      });
+      if (isPhotoReused) {
+        return {
+          success: false,
+          code: 409,
+          message: 'Photo reference has already been used. Please take a fresh selfie.'
+        };
+      }
+
       // Generate server timestamp
       var serverStartTime = new Date().toISOString();
       var shiftId = _SheetsService.generateShiftId();
@@ -175,11 +208,17 @@ var ShiftService = (function() {
         'Regular Hours': 0,
         'Overtime Hours': 0,
         Status: 'Active',
-        'Created At': serverStartTime
+        'Created At': serverStartTime,
+        'Start Photo Key': photoKey,
+        'Start Photo Captured At': photoCapturedAt || serverStartTime,
+        'Start Photo Verification Status': 'Verified',
+        'End Photo Key': '',
+        'End Photo Captured At': '',
+        'End Photo Verification Status': ''
       };
 
       _SheetsService.appendRow(_SHEETS.SHIFTS, shiftData);
-      this.logAudit(employeeId, 'start_shift', 'success', 'Started shift ' + shiftId + ' at site ' + siteId + ' (GPS: ' + lat + ', ' + lon + ')');
+      this.logAudit(employeeId, 'start_shift', 'success', 'Started shift ' + shiftId + ' at site ' + siteId + ' (GPS: ' + lat + ', ' + lon + ', Photo: ' + photoKey + ')');
 
       return {
         success: true,
@@ -190,6 +229,8 @@ var ShiftService = (function() {
         lat: lat,
         lon: lon,
         accuracy: accuracy,
+        photoKey: photoKey,
+        photoVerificationStatus: 'Verified',
         message: 'Shift started successfully'
       };
     } catch (err) {
@@ -226,6 +267,39 @@ var ShiftService = (function() {
         return { success: false, message: 'No active shift found for this employee to end.' };
       }
 
+      // Validate mandatory selfie photo reference
+      var photoKey = (params.photoKey || '').toString().trim();
+      var photoCapturedAt = (params.photoCapturedAt || '').toString().trim();
+      if (!photoKey) {
+        return {
+          success: false,
+          code: 400,
+          message: 'Mandatory selfie photo verification is required to end a shift'
+        };
+      }
+
+      if (photoKey.indexOf('photos/') !== 0) {
+        return {
+          success: false,
+          code: 400,
+          message: 'Invalid photo reference format. Must begin with photos/'
+        };
+      }
+
+      // Anti-reuse verification across all shifts
+      var allShifts = _SheetsService.getAllShifts();
+      var isPhotoReused = allShifts.some(function(s) {
+        return (s['Start Photo Key'] && s['Start Photo Key'] === photoKey) ||
+               (s['End Photo Key'] && s['End Photo Key'] === photoKey);
+      });
+      if (isPhotoReused) {
+        return {
+          success: false,
+          code: 409,
+          message: 'Photo reference has already been used. Please take a fresh selfie.'
+        };
+      }
+
       // Server-side clock out timestamp
       var serverEndTime = new Date().toISOString();
 
@@ -240,11 +314,14 @@ var ShiftService = (function() {
         'End Accuracy': !isNaN(accuracy) ? accuracy : '',
         'Regular Hours': hoursCalc.regularHours,
         'Overtime Hours': hoursCalc.overtimeHours,
-        Status: 'Completed'
+        Status: 'Completed',
+        'End Photo Key': photoKey,
+        'End Photo Captured At': photoCapturedAt || serverEndTime,
+        'End Photo Verification Status': 'Verified'
       };
 
       _SheetsService.updateRow(_SHEETS.SHIFTS, activeShift.ID, updateData);
-      this.logAudit(employeeId, 'end_shift', 'success', 'Ended shift ' + activeShift.ID + ' (GPS: ' + lat + ', ' + lon + ')');
+      this.logAudit(employeeId, 'end_shift', 'success', 'Ended shift ' + activeShift.ID + ' (GPS: ' + lat + ', ' + lon + ', Photo: ' + photoKey + ')');
 
       // Create pending overtime record if overtime was performed
       var overtimeId = null;
@@ -264,6 +341,8 @@ var ShiftService = (function() {
         regularHours: hoursCalc.regularHours,
         overtimeHours: hoursCalc.overtimeHours,
         overtimeId: overtimeId,
+        endPhotoKey: photoKey,
+        endPhotoVerificationStatus: 'Verified',
         message: 'Shift ended successfully'
       };
     } catch (err) {
@@ -340,11 +419,33 @@ var ShiftService = (function() {
   };
 
   /**
+   * Helper to normalize shift photo metadata and label legacy records
+   */
+  ShiftServiceClass.prototype._normalizeShift = function(s) {
+    if (!s) return s;
+    var hasStartPhoto = Boolean(s['Start Photo Key']);
+    var hasEndPhoto = Boolean(s['End Photo Key']);
+    var isCompleted = s.Status === 'Completed';
+
+    return Object.assign({}, s, {
+      startPhotoKey: s['Start Photo Key'] || '',
+      startPhotoCapturedAt: s['Start Photo Captured At'] || '',
+      startPhotoStatus: hasStartPhoto ? (s['Start Photo Verification Status'] || 'Verified') : 'Legacy Record',
+      endPhotoKey: s['End Photo Key'] || '',
+      endPhotoCapturedAt: s['End Photo Captured At'] || '',
+      endPhotoStatus: hasEndPhoto ? (s['End Photo Verification Status'] || 'Verified') : (isCompleted ? 'Legacy Record' : 'Pending')
+    });
+  };
+
+  /**
    * Get shifts for employee
    */
   ShiftServiceClass.prototype.getEmployeeShifts = function(employeeId) {
     var all = _SheetsService.getAllShifts();
-    return all.filter(function(s) { return s['Employee ID'] === employeeId; });
+    var self = this;
+    return all
+      .filter(function(s) { return s['Employee ID'] === employeeId; })
+      .map(function(s) { return self._normalizeShift(s); });
   };
 
   /**
@@ -389,9 +490,10 @@ var ShiftService = (function() {
 
       // Single read of Shifts sheet (cached)
       var allShifts = _SheetsService.getAllShifts();
-      var employeeShifts = allShifts.filter(function(s) {
-        return String(s['Employee ID']) === employeeId;
-      });
+      var self = this;
+      var employeeShifts = allShifts
+        .filter(function(s) { return String(s['Employee ID']) === employeeId; })
+        .map(function(s) { return self._normalizeShift(s); });
 
       var activeShift = null;
       for (var i = 0; i < employeeShifts.length; i++) {

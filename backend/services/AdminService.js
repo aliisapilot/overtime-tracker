@@ -437,6 +437,10 @@ var AdminService = (function() {
       });
 
       var attendance = filtered.map(function(s) {
+        var hasStartPhoto = Boolean(s['Start Photo Key']);
+        var hasEndPhoto = Boolean(s['End Photo Key']);
+        var isCompleted = s.Status === 'Completed';
+
         return {
           shiftId: s.ID,
           employeeId: s['Employee ID'],
@@ -454,7 +458,13 @@ var AdminService = (function() {
           breakMinutes: parseFloat(s['Break Minutes'] || 0),
           regularHours: parseFloat(s['Regular Hours'] || 0),
           overtimeHours: parseFloat(s['Overtime Hours'] || 0),
-          status: s.Status
+          status: s.Status,
+          startPhotoKey: s['Start Photo Key'] || '',
+          startPhotoCapturedAt: s['Start Photo Captured At'] || '',
+          startPhotoStatus: hasStartPhoto ? (s['Start Photo Verification Status'] || 'Verified') : 'Legacy Record',
+          endPhotoKey: s['End Photo Key'] || '',
+          endPhotoCapturedAt: s['End Photo Captured At'] || '',
+          endPhotoStatus: hasEndPhoto ? (s['End Photo Verification Status'] || 'Verified') : (isCompleted ? 'Legacy Record' : 'Pending')
         };
       });
 
@@ -661,6 +671,66 @@ var AdminService = (function() {
       };
     } catch (error) {
       return { success: false, message: 'Failed to generate monthly report: ' + (error.message || error) };
+    }
+  };
+
+  /**
+   * Combined Admin Dashboard Data Endpoint
+   * Returns workforce, job sites, pending overtime, and active shift counts in a single call.
+   * Significantly reduces round-trips and eliminates cold-start timeouts from parallel requests.
+   */
+  AdminServiceClass.prototype.getAdminDashboardData = function(params) {
+    try {
+      var employees = _SheetsService.getAllEmployees();
+      var jobSites = _SheetsService.getAllJobSites();
+      var shifts = _SheetsService.getAllShifts();
+      var overtime = _SheetsService.getAllOvertime();
+
+      var pendingOvertime = overtime.filter(function(o) {
+        return (o['Approval Status'] || o.ApprovalStatus) === 'Pending';
+      });
+
+      var activeShifts = shifts.filter(function(s) {
+        return s.Status === 'Active' || !s['End Time'];
+      });
+
+      var todayStr = new Date().toISOString().split('T')[0];
+      var todayShifts = shifts.filter(function(s) {
+        return s['Start Time'] && s['Start Time'].indexOf(todayStr) === 0;
+      });
+
+      return {
+        success: true,
+        employees: employees.map(function(e) {
+          return {
+            id: e.ID,
+            name: e.Name,
+            phone: e.Phone || '',
+            role: e.Role || 'Labourer',
+            siteId: e['Site ID'] || e.SiteID || '',
+            status: e.Status || 'Active',
+            createdAt: e['Created At'] || '',
+            lastAccessed: e['Last Accessed'] || ''
+          };
+        }),
+        jobSites: jobSites.map(function(s) {
+          return {
+            id: s.ID,
+            name: s.Name,
+            address: s.Address || '',
+            lat: s.Latitude ? parseFloat(s.Latitude) : null,
+            lon: s.Longitude ? parseFloat(s.Longitude) : null,
+            geofenceRadius: s['Geofence Radius'] ? parseFloat(s['Geofence Radius']) : (_CONFIG.DEFAULT_GEOFENCE_RADIUS || 100),
+            status: s.Status || 'Active'
+          };
+        }),
+        pendingOvertime: pendingOvertime,
+        activeShiftsCount: activeShifts.length,
+        todayShiftsCount: todayShifts.length,
+        totalEmployeesCount: employees.length
+      };
+    } catch (error) {
+      return { success: false, message: 'Failed to load admin dashboard data: ' + (error.message || error) };
     }
   };
 

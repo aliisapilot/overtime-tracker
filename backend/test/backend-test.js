@@ -116,6 +116,17 @@ function setupMockDatabase() {
         Status: 'Inactive',
         'Created At': new Date().toISOString(),
         'Last Accessed': ''
+      },
+      {
+        ID: 'EMP003',
+        Name: 'Bilal Khan',
+        Phone: '+971555333444',
+        Role: 'Labourer',
+        'Site ID': 'SITE001',
+        'PIN Hash': workerPinHash,
+        Status: 'Active',
+        'Created At': new Date().toISOString(),
+        'Last Accessed': ''
       }
     ],
     [SHEETS.JOB_SITES]: [
@@ -271,30 +282,74 @@ runTest('Geofence calculation rejects location far away (>100m)', () => {
   assert.ok(res.distance > 500);
 });
 
-// 5. SHIFT & OVERTIME TESTS
+// 5. SHIFT & OVERTIME TESTS (WITH MANDATORY SELFIE VERIFICATION)
 console.log('\n[5. Shift Management & Overtime Tests]');
 let activeShiftId = null;
 
-runTest('Start shift records worker live GPS location and timestamp', () => {
+runTest('Start shift without selfie photo is rejected', () => {
   const res = ShiftService.startShift({
     employeeId: 'EMP001',
     lat: 25.2533,
     lon: 55.3652,
     accuracy: 18
   });
+  assert.strictEqual(res.success, false);
+  assert.strictEqual(res.code, 400);
+  assert.ok(res.message.includes('Mandatory selfie photo verification is required'));
+});
+
+runTest('Start shift with invalid photo format is rejected', () => {
+  const res = ShiftService.startShift({
+    employeeId: 'EMP001',
+    lat: 25.2533,
+    lon: 55.3652,
+    accuracy: 18,
+    photoKey: 'unauthorized_upload.jpg'
+  });
+  assert.strictEqual(res.success, false);
+  assert.strictEqual(res.code, 400);
+  assert.ok(res.message.includes('Must begin with photos/'));
+});
+
+runTest('Start shift records worker live GPS, photo key and server timestamp', () => {
+  const res = ShiftService.startShift({
+    employeeId: 'EMP001',
+    lat: 25.2533,
+    lon: 55.3652,
+    accuracy: 18,
+    photoKey: 'photos/EMP001/start_test_001.jpg',
+    photoCapturedAt: new Date().toISOString()
+  });
   assert.strictEqual(res.success, true);
   assert.ok(res.shiftId.startsWith('SHIFT'));
   assert.strictEqual(res.lat, 25.2533);
   assert.strictEqual(res.lon, 55.3652);
+  assert.strictEqual(res.photoKey, 'photos/EMP001/start_test_001.jpg');
+  assert.strictEqual(res.photoVerificationStatus, 'Verified');
   activeShiftId = res.shiftId;
 });
 
-runTest('Start shift records start latitude and longitude in database', () => {
+runTest('Start shift records start latitude, longitude and photo metadata in database', () => {
   const shiftRecord = SheetsService.findById(SHEETS.SHIFTS, activeShiftId);
   assert.ok(shiftRecord, 'Shift must exist in database');
   assert.strictEqual(shiftRecord['Start Latitude'], 25.2533);
   assert.strictEqual(shiftRecord['Start Longitude'], 55.3652);
+  assert.strictEqual(shiftRecord['Start Photo Key'], 'photos/EMP001/start_test_001.jpg');
+  assert.strictEqual(shiftRecord['Start Photo Verification Status'], 'Verified');
   assert.strictEqual(shiftRecord.Status, 'Active');
+});
+
+runTest('Reusing a previously used photo key is strictly rejected (anti-reuse)', () => {
+  const res = ShiftService.startShift({
+    employeeId: 'EMP003',
+    lat: 25.2533,
+    lon: 55.3652,
+    accuracy: 18,
+    photoKey: 'photos/EMP001/start_test_001.jpg' // Reused key!
+  });
+  assert.strictEqual(res.success, false);
+  assert.strictEqual(res.code, 409);
+  assert.ok(res.message.includes('already been used'));
 });
 
 runTest('Duplicate shift start is rejected while active shift exists', () => {
@@ -302,7 +357,8 @@ runTest('Duplicate shift start is rejected while active shift exists', () => {
     employeeId: 'EMP001',
     lat: 25.2533,
     lon: 55.3652,
-    accuracy: 18
+    accuracy: 18,
+    photoKey: 'photos/EMP001/start_test_002.jpg'
   });
   assert.strictEqual(res.success, false);
   assert.ok(res.message.includes('already have an active shift'));
@@ -335,7 +391,19 @@ runTest('Overnight shift calculation correctly bridges across midnight', () => {
   assert.strictEqual(calc.totalHours, 10);
 });
 
-runTest('End shift completes shift and generates pending overtime record', () => {
+runTest('End shift without selfie photo is rejected', () => {
+  const res = ShiftService.endShift({
+    employeeId: 'EMP001',
+    lat: 25.2533,
+    lon: 55.3652,
+    accuracy: 16
+  });
+  assert.strictEqual(res.success, false);
+  assert.strictEqual(res.code, 400);
+  assert.ok(res.message.includes('Mandatory selfie photo verification is required to end a shift'));
+});
+
+runTest('End shift completes shift, records photo key, and generates pending overtime record', () => {
   const currentShift = SheetsService.findById(SHEETS.SHIFTS, activeShiftId);
   currentShift['Start Time'] = new Date(Date.now() - (11 * 3600 * 1000)).toISOString();
 
@@ -343,17 +411,65 @@ runTest('End shift completes shift and generates pending overtime record', () =>
     employeeId: 'EMP001',
     lat: 25.2533,
     lon: 55.3652,
-    accuracy: 16
+    accuracy: 16,
+    photoKey: 'photos/EMP001/end_test_001.jpg',
+    photoCapturedAt: new Date().toISOString()
   });
 
   assert.strictEqual(res.success, true);
   assert.strictEqual(res.regularHours, 8);
   assert.ok(res.overtimeHours > 0, 'Must record overtime hours');
   assert.ok(res.overtimeId, 'Must generate overtime record ID');
+  assert.strictEqual(res.endPhotoKey, 'photos/EMP001/end_test_001.jpg');
+  assert.strictEqual(res.endPhotoVerificationStatus, 'Verified');
 
   const otRecord = SheetsService.findById(SHEETS.OVERTIME, res.overtimeId);
   assert.ok(otRecord, 'Overtime record must be in database');
   assert.strictEqual(otRecord['Approval Status'], 'Pending');
+
+  const shiftInDb = SheetsService.findById(SHEETS.SHIFTS, activeShiftId);
+  assert.strictEqual(shiftInDb['End Photo Key'], 'photos/EMP001/end_test_001.jpg');
+  assert.strictEqual(shiftInDb['End Photo Verification Status'], 'Verified');
+  assert.strictEqual(shiftInDb.Status, 'Completed');
+});
+
+runTest('Historical records without photos remain readable and are labelled as legacy records', () => {
+  // Insert a mock historical shift with no photo keys
+  const legacyShiftId = 'SHIFT_LEGACY_001';
+  SheetsService.appendRow(SHEETS.SHIFTS, {
+    ID: legacyShiftId,
+    'Employee ID': 'EMP001',
+    'Site ID': 'SITE001',
+    'Start Time': '2026-09-01T08:00:00.000Z',
+    'End Time': '2026-09-01T17:00:00.000Z',
+    'Start Latitude': 25.1972,
+    'Start Longitude': 55.2744,
+    'Start Accuracy': 15,
+    'End Latitude': 25.1972,
+    'End Longitude': 55.2744,
+    'End Accuracy': 15,
+    'Break Minutes': 60,
+    'Regular Hours': 8,
+    'Overtime Hours': 0,
+    Status: 'Completed',
+    'Created At': '2026-09-01T08:00:00.000Z'
+  });
+
+  const attendanceRes = AdminService.getAttendance({ employeeId: 'EMP001' });
+  assert.strictEqual(attendanceRes.success, true);
+  const legacyRecord = attendanceRes.attendance.find(a => a.shiftId === legacyShiftId);
+  assert.ok(legacyRecord, 'Legacy record must be returned in attendance');
+  assert.strictEqual(legacyRecord.startPhotoKey, '');
+  assert.strictEqual(legacyRecord.startPhotoStatus, 'Legacy Record');
+  assert.strictEqual(legacyRecord.endPhotoKey, '');
+  assert.strictEqual(legacyRecord.endPhotoStatus, 'Legacy Record');
+
+  const dashboardRes = ShiftService.getDashboardData({ employeeId: 'EMP001' });
+  assert.strictEqual(dashboardRes.success, true);
+  const legacyInDash = dashboardRes.shifts.find(s => s.ID === legacyShiftId);
+  assert.ok(legacyInDash, 'Legacy record must be returned in labourer dashboard');
+  assert.strictEqual(legacyInDash.startPhotoStatus, 'Legacy Record');
+  assert.strictEqual(legacyInDash.endPhotoStatus, 'Legacy Record');
 });
 
 // 6. ADMIN & GATEWAY TESTS
@@ -539,6 +655,26 @@ runTest('Admin can create a new job site with coordinate validation', () => {
   assert.strictEqual(resUpdate.jobSite.Name, 'Dubai Hills Estate Sector 4 (Updated)');
   assert.strictEqual(resUpdate.jobSite.Latitude, 25.113);
   assert.strictEqual(resUpdate.jobSite['Geofence Radius'], 200);
+});
+
+runTest('Admin combined getAdminDashboardData returns all required dashboard data in one call', () => {
+  const req = {
+    postData: {
+      contents: JSON.stringify({
+        action: 'getAdminDashboardData',
+        token: adminToken
+      })
+    }
+  };
+  const rawRes = Code.doPost(req);
+  const res = (rawRes && typeof rawRes.getContent === 'function') ? JSON.parse(rawRes.getContent()) : rawRes;
+  assert.strictEqual(res.success, true);
+  assert.ok(Array.isArray(res.employees), 'Must return employees array');
+  assert.ok(Array.isArray(res.jobSites), 'Must return jobSites array');
+  assert.ok(Array.isArray(res.pendingOvertime), 'Must return pendingOvertime array');
+  assert.strictEqual(typeof res.activeShiftsCount, 'number');
+  assert.strictEqual(typeof res.todayShiftsCount, 'number');
+  assert.strictEqual(typeof res.totalEmployeesCount, 'number');
 });
 
 runTest('Audit logs record all sensitive actions', () => {

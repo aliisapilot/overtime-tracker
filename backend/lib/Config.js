@@ -16,7 +16,9 @@ var CONFIG = {
   PBKDF2_ITERATIONS: 25000, // Strengthened PBKDF2 iterations for PIN security
   SALT_LENGTH: 32, // 256-bit salt entropy
   ADMIN_ROLE: 'Admin',
-  LABOURER_ROLE: 'Labourer'
+  LABOURER_ROLE: 'Labourer',
+  PHOTO_KEY_PREFIX: 'photos/',
+  PHOTO_MAX_SIZE_BYTES: 5 * 1024 * 1024 // 5MB limit
 };
 
 var SHEETS = {

@@ -7,3 +7,8 @@ directory = "./frontend/out"
 binding = "ASSETS"
 html_handling = "auto-trailing-slash"
 not_found_handling = "single-page-application"
+
+[[r2_buckets]]
+binding = "PHOTOS_BUCKET"
+bucket_name = "overtime-tracker-photos"
+

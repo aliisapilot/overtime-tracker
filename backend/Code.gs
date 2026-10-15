@@ -134,6 +134,8 @@ function doPost(e) {
     }
 
     switch (action) {
+      case 'getAdminDashboardData':
+        return jsonResponse(_AdminService.getAdminDashboardData(params));
       case 'getJobSites':
         return jsonResponse(_AdminService.getJobSites(params));
       case 'createJobSite':

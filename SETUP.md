@@ -100,7 +100,31 @@ If you already have a deployed Apps Script project:
      NEXT_PUBLIC_GAS_WEB_APP_URL=https://script.google.com/macros/s/YOUR_DEPLOYED_URL/exec
      ```
 
-## Verify Installation
+## Cloudflare R2 Private Photo Storage Setup
+
+To support mandatory selfies, Cloudflare R2 is used for fast, private, low-cost attendance photo storage.
+
+### 1. Create the R2 Bucket
+Run the following command in the project root:
+```powershell
+npx wrangler r2 bucket create overtime-tracker-photos
+```
+
+### 2. Confirm wrangler.toml Binding
+Verify that `wrangler.toml` includes:
+```toml
+[[r2_buckets]]
+binding = "PHOTOS_BUCKET"
+bucket_name = "overtime-tracker-photos"
+```
+
+### 3. Deploy Cloudflare Worker
+Deploy the updated worker with R2 bindings and photo upload/view endpoints:
+```powershell
+npx wrangler deploy
+```
+
+> **Note**: In local development (`npm run dev` or when the R2 bucket is not yet provisioned), `worker.js` automatically uses a high-performance in-memory cache fallback so that development and testing remain fully functional without external setup.
 
 ### Frontend
 ```powershell

@@ -211,7 +211,8 @@ runTest('START SHIFT inside permitted geofence succeeds', () => {
     employeeId: 'EMP003',
     lat: insideLat,
     lon: insideLon,
-    accuracy: 12
+    accuracy: 12,
+    photoKey: 'photos/EMP003/start_001.jpg'
   });
 
   assert.strictEqual(res.success, true, 'Must succeed inside geofence');
@@ -230,7 +231,7 @@ runTest('START SHIFT outside permitted geofence is rejected with distance', () =
   // End active shift for EMP003 first
   const active = ShiftService.getActiveShift('EMP003');
   if (active) {
-    ShiftService.endShift({ employeeId: 'EMP003', lat: SITE1_LAT, lon: SITE1_LON, accuracy: 10 });
+    ShiftService.endShift({ employeeId: 'EMP003', lat: SITE1_LAT, lon: SITE1_LON, accuracy: 10, photoKey: 'photos/EMP003/end_001.jpg' });
   }
 
   // Coordinates far away (e.g. 5km away: 25.2500, 55.3000)
@@ -241,7 +242,8 @@ runTest('START SHIFT outside permitted geofence is rejected with distance', () =
     employeeId: 'EMP003',
     lat: farLat,
     lon: farLon,
-    accuracy: 15
+    accuracy: 15,
+    photoKey: 'photos/EMP003/start_002.jpg'
   });
 
   assert.strictEqual(res.success, false, 'Must be rejected when outside geofence');
@@ -281,14 +283,15 @@ runTest('Now-assigned labourer EMP001 can successfully START SHIFT', () => {
     employeeId: 'EMP001',
     lat: SITE1_LAT,
     lon: SITE1_LON,
-    accuracy: 10
+    accuracy: 10,
+    photoKey: 'photos/EMP001/start_002.jpg'
   });
 
   assert.strictEqual(res.success, true, 'Shift start must now succeed');
   assert.strictEqual(res.siteId, 'SITE001');
 
   // End shift
-  ShiftService.endShift({ employeeId: 'EMP001', lat: SITE1_LAT, lon: SITE1_LON, accuracy: 10 });
+  ShiftService.endShift({ employeeId: 'EMP001', lat: SITE1_LAT, lon: SITE1_LON, accuracy: 10, photoKey: 'photos/EMP001/end_002.jpg' });
 });
 
 runTest('Admin can reassign employee to SITE002 without altering previous shift site ID', () => {

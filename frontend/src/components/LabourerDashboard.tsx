@@ -16,6 +16,8 @@ import {
   GpsCoordinates,
 } from '@/lib/geo';
 import ChangePinModal from '@/components/ChangePinModal';
+import SelfieModal from '@/components/SelfieModal';
+import PhotoModal from '@/components/PhotoModal';
 
 const LiveLocationMap = dynamic(() => import('@/components/LiveLocationMap'), {
   ssr: false,
@@ -46,17 +48,31 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
   const [loadingData, setLoadingData] = useState(true);
   const [activeShift, setActiveShift] = useState<ShiftRecord | null>(null);
 
-  // GPS state
+  // GPS state (Manual check only - no background polling or watchPosition)
   const [gps, setGps] = useState<GpsCoordinates | null>(null);
   const [gpsLoading, setGpsLoading] = useState(false);
   const [gpsError, setGpsError] = useState<string | null>(null);
-  const [showMap, setShowMap] = useState<boolean>(true);
+  const [showMap, setShowMap] = useState<boolean>(false);
 
   // Action states
-  const [actionLoading, setActionLoading] = useState(false);
   const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [breakMinutes, setBreakMinutes] = useState(60);
   const [showPinModal, setShowPinModal] = useState(false);
+
+  // Selfie Modal state
+  const [selfieModalOpen, setSelfieModalOpen] = useState(false);
+  const [selfieModalType, setSelfieModalType] = useState<'start' | 'end'>('start');
+
+  // Photo viewer modal state
+  const [previewPhoto, setPreviewPhoto] = useState<{
+    key: string;
+    title: string;
+    timestamp?: string;
+    lat?: number | null;
+    lon?: number | null;
+    accuracy?: number | null;
+    status?: string;
+  } | null>(null);
 
   // Derived site info
   const assignedSiteId = (employeeProfile.siteId || '').trim();
@@ -91,14 +107,14 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
     }
   }, [session.token, session.employee.id]);
 
-
-  // GPS Acquisition
+  // Explicit, on-demand GPS acquisition (Triggered ONLY when user explicitly clicks Check Location)
   const acquireGps = useCallback(async () => {
     setGpsLoading(true);
     setGpsError(null);
     try {
       const coords = await getCurrentPosition(15000);
       setGps(coords);
+      setShowMap(true);
       return coords;
     } catch (err: unknown) {
       const msg = (err as Error).message || 'Could not acquire GPS position. Please enable location permissions.';
@@ -109,13 +125,13 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
     }
   }, []);
 
+  // Phase 2 Compliance: NO background GPS polling or continuous tracking on mount
   useEffect(() => {
     loadData();
-    acquireGps();
-  }, [loadData, acquireGps]);
+  }, [loadData]);
 
-  // Handle Start Shift (captures live GPS location directly with assigned site verification)
-  const handleStartShift = async () => {
+  // Open mandatory selfie + fresh GPS modal for clock-in
+  const handleOpenStartShiftModal = () => {
     if (!hasAssignedSite) {
       setActionMessage({
         type: 'error',
@@ -123,151 +139,54 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
       });
       return;
     }
-
-    // A shift action must capture a fresh position, never reuse the
-    // position acquired when the dashboard first opened.
-    const currentGps = await acquireGps();
-    if (!currentGps) {
-      setActionMessage({
-        type: 'error',
-        text: 'Please enable GPS access on your phone or browser to record your clock-in location.',
-      });
-      return;
-    }
-
-    // Check GPS accuracy tolerance (<= 30m)
-    if (currentGps.accuracy > 30) {
-      setActionMessage({
-        type: 'error',
-        text: `GPS signal accuracy (±${Math.round(currentGps.accuracy)}m) exceeds maximum allowable limit (30m). Please step into an open area for a stronger satellite lock.`,
-      });
-      return;
-    }
-
-    // Check geofence if site coordinates are configured
-    if (siteLat != null && siteLon != null) {
-      const dist = calculateDistanceMeters(currentGps.lat, currentGps.lon, siteLat, siteLon);
-      if (dist > geofenceRadius) {
-        setActionMessage({
-          type: 'error',
-          text: `Outside assigned work site (${dist}m away from ${employeeProfile.siteName || assignedSiteId}, allowed radius is ${geofenceRadius}m). You must be within the work site boundary to clock in.`,
-        });
-        return;
-      }
-    }
-
-    setActionLoading(true);
-    setActionMessage(null);
-
-    try {
-      const res = await startShift(session.token, session.employee.id, assignedSiteId, {
-        lat: currentGps.lat,
-        lon: currentGps.lon,
-        accuracy: Math.round(currentGps.accuracy),
-      });
-
-      if (res.success && res.data?.shiftId) {
-        // Update state optimistically from the response — no extra GAS round-trip needed
-        const newShift: ShiftRecord = {
-          ID: res.data.shiftId,
-          'Employee ID': session.employee.id,
-          'Site ID': assignedSiteId,
-          'Start Time': new Date().toISOString(),
-          'Start Latitude': currentGps.lat,
-          'Start Longitude': currentGps.lon,
-          'Start Accuracy': Math.round(currentGps.accuracy),
-          'Break Minutes': 60,
-          Status: 'Active',
-          'Created At': new Date().toISOString(),
-        };
-        setActiveShift(newShift);
-        setShifts((prev) => [newShift, ...prev]);
-        setActionMessage({
-          type: 'success',
-          text: `Shift started successfully at ${employeeProfile.siteName || assignedSiteId}! Location recorded at ${currentGps.lat.toFixed(5)}, ${currentGps.lon.toFixed(5)}.`,
-        });
-      } else if (res.success) {
-        // Fallback: refresh from server if response didn't include shiftId
-        setActionMessage({
-          type: 'success',
-          text: `Shift started successfully at ${employeeProfile.siteName || assignedSiteId}!`,
-        });
-        await loadData();
-      } else {
-        setActionMessage({ type: 'error', text: res.message || 'Failed to start shift.' });
-      }
-    } catch (err: unknown) {
-      setActionMessage({ type: 'error', text: (err as Error).message || 'Network error starting shift.' });
-    } finally {
-      setActionLoading(false);
-    }
+    setSelfieModalType('start');
+    setSelfieModalOpen(true);
   };
 
-  // Handle End Shift (captures live GPS location directly)
-  const handleEndShift = async () => {
-    // A shift action must capture a fresh position, never reuse the
-    // position acquired when the dashboard first opened.
-    const currentGps = await acquireGps();
-    if (!currentGps) {
+  // Open mandatory selfie + fresh GPS modal for clock-out
+  const handleOpenEndShiftModal = () => {
+    if (!activeShift) {
       setActionMessage({
         type: 'error',
-        text: 'Please enable GPS access on your phone or browser to record your clock-out location.',
+        text: 'No active shift found to end.',
       });
       return;
     }
+    setSelfieModalType('end');
+    setSelfieModalOpen(true);
+  };
 
-    setActionLoading(true);
-    setActionMessage(null);
-
-    try {
-      const res = await endShift(
-        session.token,
-        session.employee.id,
-        {
-          lat: currentGps.lat,
-          lon: currentGps.lon,
-          accuracy: Math.round(currentGps.accuracy),
-        },
-        breakMinutes
-      );
-
-      if (res.success) {
-        const otText = res.data?.overtimeHours ? ` (${res.data.overtimeHours} hrs overtime submitted for review)` : '';
-        // Update state optimistically — mark the active shift as Completed without re-fetching
-        if (activeShift) {
-          const completedShift: ShiftRecord = {
-            ...activeShift,
-            'End Time': new Date().toISOString(),
-            'End Latitude': currentGps.lat,
-            'End Longitude': currentGps.lon,
-            'End Accuracy': Math.round(currentGps.accuracy),
-            'Regular Hours': 0,       // Will be accurate on next loadData
-            'Overtime Hours': res.data?.overtimeHours ?? 0,
-            Status: 'Completed',
-          };
-          setShifts((prev) => prev.map((s) => s.ID === activeShift.ID ? completedShift : s));
-          setActiveShift(null);
-        } else {
-          await loadData();
-        }
-
-        setActionMessage({
-          type: 'success',
-          text: `Shift ended! Clock-out location recorded at ${currentGps.lat.toFixed(5)}, ${currentGps.lon.toFixed(5)}.${otText}`,
-        });
+  // Handle successful shift creation or completion from SelfieModal
+  const handleShiftSuccess = (shiftRecord: ShiftRecord) => {
+    if (selfieModalType === 'start') {
+      setActiveShift(shiftRecord);
+      setShifts((prev) => [shiftRecord, ...prev]);
+      setActionMessage({
+        type: 'success',
+        text: `Shift started successfully at ${employeeProfile.siteName || assignedSiteId}! Selfie and GPS verified.`,
+      });
+    } else {
+      if (activeShift) {
+        const completedShift: ShiftRecord = {
+          ...activeShift,
+          ...shiftRecord,
+          Status: 'Completed',
+        };
+        setShifts((prev) => prev.map((s) => (s.ID === activeShift.ID ? completedShift : s)));
+        setActiveShift(null);
       } else {
-        setActionMessage({ type: 'error', text: res.message || 'Failed to end shift.' });
+        loadData();
       }
-    } catch (err: unknown) {
-      setActionMessage({ type: 'error', text: (err as Error).message || 'Network error ending shift.' });
-    } finally {
-      setActionLoading(false);
+      setActionMessage({
+        type: 'success',
+        text: 'Shift ended! Clock-out selfie and GPS verified.',
+      });
     }
   };
 
   const accuracyBadge = gps ? categorizeAccuracy(gps.accuracy) : null;
-  const canStartShift = !activeShift && !actionLoading;
-  const canEndShift = Boolean(activeShift) && !actionLoading;
+  const canStartShift = !activeShift;
+  const canEndShift = Boolean(activeShift);
 
   return (
     <div className="flex-1 max-w-4xl w-full mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
@@ -561,7 +480,7 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
             )}
 
             <button
-              onClick={handleStartShift}
+              onClick={handleOpenStartShiftModal}
               disabled={!canStartShift}
               className={`w-full py-5 rounded-2xl text-lg font-bold tracking-wide transition-all shadow-xl flex items-center justify-center gap-3 ${
                 canStartShift
@@ -569,17 +488,8 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
                   : 'bg-slate-800 text-slate-500 border border-slate-700/80 cursor-not-allowed opacity-60'
               }`}
             >
-              {actionLoading ? (
-                <>
-                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  <span>Recording Shift Start...</span>
-                </>
-              ) : (
-                <>
-                  <span className="text-2xl">▶</span>
-                  <span>START SHIFT</span>
-                </>
-              )}
+              <span className="text-2xl">📸</span>
+              <span>START SHIFT (SELFIE & GPS)</span>
             </button>
           </div>
         ) : (
@@ -618,7 +528,7 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
             </div>
 
             <button
-              onClick={handleEndShift}
+              onClick={handleOpenEndShiftModal}
               disabled={!canEndShift}
               className={`w-full py-5 rounded-2xl text-lg font-bold tracking-wide transition-all shadow-xl flex items-center justify-center gap-3 ${
                 canEndShift
@@ -626,17 +536,8 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
                   : 'bg-slate-800 text-slate-500 border border-slate-700/80 cursor-not-allowed opacity-60'
               }`}
             >
-              {actionLoading ? (
-                <>
-                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  <span>Recording Shift End...</span>
-                </>
-              ) : (
-                <>
-                  <span className="text-2xl">⏹</span>
-                  <span>END SHIFT & CLOCK OUT</span>
-                </>
-              )}
+              <span className="text-2xl">📸</span>
+              <span>END SHIFT & CLOCK OUT</span>
             </button>
           </div>
         )}
@@ -676,19 +577,43 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
                         <div>
                           {new Date(s['Start Time']).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                         </div>
-                        {sLat && sLon ? (
-                          <a
-                            href={`https://www.google.com/maps?q=${sLat},${sLon}`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-[10px] text-emerald-400 hover:underline inline-flex items-center gap-0.5 mt-0.5"
-                          >
-                            <span>📍</span>
-                            <span>
-                              {Number(sLat).toFixed(4)}, {Number(sLon).toFixed(4)}
-                            </span>
-                          </a>
-                        ) : null}
+                        <div className="flex flex-col gap-0.5 mt-0.5">
+                          {sLat && sLon ? (
+                            <a
+                              href={`https://www.google.com/maps?q=${sLat},${sLon}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-[10px] text-emerald-400 hover:underline inline-flex items-center gap-0.5"
+                            >
+                              <span>📍</span>
+                              <span>
+                                {Number(sLat).toFixed(4)}, {Number(sLon).toFixed(4)}
+                              </span>
+                            </a>
+                          ) : null}
+                          {s.startPhotoKey || s['Start Photo Key'] ? (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setPreviewPhoto({
+                                  key: s.startPhotoKey || s['Start Photo Key'] || '',
+                                  title: 'Clock-in Selfie',
+                                  timestamp: s['Start Photo Captured At'],
+                                  lat: sLat,
+                                  lon: sLon,
+                                  accuracy: s['Start Accuracy'],
+                                  status: s.startPhotoStatus || s['Start Photo Verification Status'] || 'Verified',
+                                })
+                              }
+                              className="text-[10px] text-blue-400 hover:text-blue-300 hover:underline inline-flex items-center gap-1 cursor-pointer"
+                            >
+                              <span>📸</span>
+                              <span>View Selfie</span>
+                            </button>
+                          ) : s.startPhotoStatus === 'Legacy Record' ? (
+                            <span className="text-[10px] text-slate-500 italic">Legacy Record</span>
+                          ) : null}
+                        </div>
                       </td>
                       <td className="py-3 pr-4 font-mono">
                         {s['End Time'] ? (
@@ -696,19 +621,43 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
                             <div>
                               {new Date(s['End Time']).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                             </div>
-                            {eLat && eLon ? (
-                              <a
-                                href={`https://www.google.com/maps?q=${eLat},${eLon}`}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="text-[10px] text-emerald-400 hover:underline inline-flex items-center gap-0.5 mt-0.5"
-                              >
-                                <span>📍</span>
-                                <span>
-                                  {Number(eLat).toFixed(4)}, {Number(eLon).toFixed(4)}
-                                </span>
-                              </a>
-                            ) : null}
+                            <div className="flex flex-col gap-0.5 mt-0.5">
+                              {eLat && eLon ? (
+                                <a
+                                  href={`https://www.google.com/maps?q=${eLat},${eLon}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-[10px] text-emerald-400 hover:underline inline-flex items-center gap-0.5"
+                                >
+                                  <span>📍</span>
+                                  <span>
+                                    {Number(eLat).toFixed(4)}, {Number(eLon).toFixed(4)}
+                                  </span>
+                                </a>
+                              ) : null}
+                              {s.endPhotoKey || s['End Photo Key'] ? (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setPreviewPhoto({
+                                      key: s.endPhotoKey || s['End Photo Key'] || '',
+                                      title: 'Clock-out Selfie',
+                                      timestamp: s['End Photo Captured At'],
+                                      lat: eLat,
+                                      lon: eLon,
+                                      accuracy: s['End Accuracy'],
+                                      status: s.endPhotoStatus || s['End Photo Verification Status'] || 'Verified',
+                                    })
+                                  }
+                                  className="text-[10px] text-blue-400 hover:text-blue-300 hover:underline inline-flex items-center gap-1 cursor-pointer"
+                                >
+                                  <span>📸</span>
+                                  <span>View Selfie</span>
+                                </button>
+                              ) : s.endPhotoStatus === 'Legacy Record' ? (
+                                <span className="text-[10px] text-slate-500 italic">Legacy Record</span>
+                              ) : null}
+                            </div>
                           </>
                         ) : (
                           <span className="text-amber-400 font-semibold">Active</span>
@@ -745,6 +694,39 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
         onClose={() => setShowPinModal(false)}
         onSuccess={() => setActionMessage({ type: 'success', text: 'Security PIN updated successfully!' })}
       />
+
+      {/* Mandatory Selfie Verification Modal */}
+      <SelfieModal
+        isOpen={selfieModalOpen}
+        type={selfieModalType}
+        employee={employeeProfile}
+        sessionToken={session.token}
+        assignedSiteName={employeeProfile.siteName || assignedSiteId}
+        siteLat={siteLat}
+        siteLon={siteLon}
+        geofenceRadius={geofenceRadius}
+        breakMinutes={breakMinutes}
+        onSuccess={handleShiftSuccess}
+        onClose={() => setSelfieModalOpen(false)}
+      />
+
+      {/* Photo Viewer Modal */}
+      {previewPhoto && (
+        <PhotoModal
+          isOpen={Boolean(previewPhoto)}
+          photoKey={previewPhoto.key}
+          token={session.token}
+          title={previewPhoto.title}
+          employeeName={session.employee.name}
+          employeeId={session.employee.id}
+          timestamp={previewPhoto.timestamp}
+          lat={previewPhoto.lat}
+          lon={previewPhoto.lon}
+          accuracy={previewPhoto.accuracy}
+          status={previewPhoto.status}
+          onClose={() => setPreviewPhoto(null)}
+        />
+      )}
     </div>
   );
 }

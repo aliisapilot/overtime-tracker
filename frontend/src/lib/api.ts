@@ -65,6 +65,18 @@ export interface ShiftRecord {
   'Overtime Hours'?: number;
   Status: 'Active' | 'Completed';
   'Created At': string;
+  'Start Photo Key'?: string;
+  startPhotoKey?: string;
+  'Start Photo Captured At'?: string;
+  startPhotoCapturedAt?: string;
+  'Start Photo Verification Status'?: string;
+  startPhotoStatus?: string;
+  'End Photo Key'?: string;
+  endPhotoKey?: string;
+  'End Photo Captured At'?: string;
+  endPhotoCapturedAt?: string;
+  'End Photo Verification Status'?: string;
+  endPhotoStatus?: string;
 }
 
 import { logDiagnostic, maskEmployeeId } from './diagnostics';
@@ -321,15 +333,70 @@ export async function login(employeeId: string, pin: string): Promise<LoginRespo
 }
 
 /**
- * Start Labourer Shift with GPS telemetry
+ * Photo Upload Response
+ */
+export interface PhotoUploadResponse {
+  success: boolean;
+  photoKey?: string;
+  capturedAt?: string;
+  size?: number;
+  message?: string;
+}
+
+/**
+ * Upload verified attendance selfie to Cloudflare Worker R2 endpoint
+ */
+export async function uploadAttendancePhoto(
+  token: string,
+  employeeId: string,
+  imageBase64: string,
+  type: 'start' | 'end',
+  capturedAt?: string
+): Promise<PhotoUploadResponse> {
+  try {
+    const res = await fetch('/api/photos/upload', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        imageBase64,
+        employeeId,
+        type,
+        capturedAt: capturedAt || new Date().toISOString(),
+      }),
+    });
+
+    const data = await res.json();
+    return data as PhotoUploadResponse;
+  } catch (err: unknown) {
+    return {
+      success: false,
+      message: (err as Error).message || 'Failed to connect to photo storage endpoint.',
+    };
+  }
+}
+
+/**
+ * Get authorized photo preview URL with token query
+ */
+export function getPhotoViewUrl(photoKey?: string, token?: string): string {
+  if (!photoKey) return '';
+  return `/api/photos/view?key=${encodeURIComponent(photoKey)}&token=${encodeURIComponent(token || '')}`;
+}
+
+/**
+ * Start Labourer Shift with GPS telemetry and mandatory selfie verification
  */
 export async function startShift(
   token: string,
   employeeId: string,
   siteId: string,
-  coords: { lat: number; lon: number; accuracy: number }
-): Promise<ApiResponse<{ shiftId: string }>> {
-  return sendGasRequest<{ shiftId: string }>({
+  coords: { lat: number; lon: number; accuracy: number },
+  photo: { photoKey: string; photoCapturedAt?: string }
+): Promise<ApiResponse<{ shiftId: string; photoKey?: string; photoVerificationStatus?: string }>> {
+  return sendGasRequest<{ shiftId: string; photoKey?: string; photoVerificationStatus?: string }>({
     action: 'startShift',
     token,
     employeeId,
@@ -337,25 +404,30 @@ export async function startShift(
     latitude: coords.lat,
     longitude: coords.lon,
     accuracy: coords.accuracy,
+    photoKey: photo.photoKey,
+    photoCapturedAt: photo.photoCapturedAt || new Date().toISOString(),
   });
 }
 
 /**
- * End Labourer Shift with GPS telemetry
+ * End Labourer Shift with GPS telemetry and mandatory selfie verification
  */
 export async function endShift(
   token: string,
   employeeId: string,
   coords: { lat: number; lon: number; accuracy: number },
+  photo: { photoKey: string; photoCapturedAt?: string },
   breakMinutes: number = 60
-): Promise<ApiResponse<{ shiftId: string; overtimeHours?: number }>> {
-  return sendGasRequest<{ shiftId: string; overtimeHours?: number }>({
+): Promise<ApiResponse<{ shiftId: string; overtimeHours?: number; endPhotoKey?: string; endPhotoVerificationStatus?: string }>> {
+  return sendGasRequest<{ shiftId: string; overtimeHours?: number; endPhotoKey?: string; endPhotoVerificationStatus?: string }>({
     action: 'endShift',
     token,
     employeeId,
     latitude: coords.lat,
     longitude: coords.lon,
     accuracy: coords.accuracy,
+    photoKey: photo.photoKey,
+    photoCapturedAt: photo.photoCapturedAt || new Date().toISOString(),
     breakMinutes,
   });
 }
@@ -490,6 +562,29 @@ export async function updateJobSite(
     longitude: data.longitude,
     geofenceRadius: data.geofenceRadius,
     status: data.status,
+  });
+}
+
+/**
+ * Combined Admin Dashboard Data
+ */
+export interface AdminDashboardData {
+  employees: EmployeeProfile[];
+  jobSites: JobSite[];
+  pendingOvertime: any[];
+  activeShiftsCount: number;
+  todayShiftsCount: number;
+  totalEmployeesCount: number;
+}
+
+/**
+ * Admin: Get Combined Dashboard Data in a Single Call
+ * Significantly reduces cold-start delays and prevents parallel GAS request throttling.
+ */
+export async function getAdminDashboardData(token: string): Promise<ApiResponse<AdminDashboardData>> {
+  return sendGasRequest<AdminDashboardData>({
+    action: 'getAdminDashboardData',
+    token,
   });
 }
 

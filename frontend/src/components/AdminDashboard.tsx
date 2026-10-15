@@ -12,9 +12,11 @@ import {
   approveOvertime,
   getAuditLogs,
   generateDailyReport,
+  getAdminDashboardData,
 } from '@/lib/api';
 import ChangePinModal from '@/components/ChangePinModal';
 import JobSiteModal from '@/components/JobSiteModal';
+import PhotoModal from '@/components/PhotoModal';
 
 interface DailyReportData {
   date: string;
@@ -44,13 +46,15 @@ interface OvertimeItem {
 }
 
 interface AttendanceItem {
-  ID: string;
+  ID?: string;
   shiftId?: string;
-  'Employee ID': string;
+  'Employee ID'?: string;
   employeeId?: string;
+  employeeName?: string;
   'Site ID'?: string;
   siteId?: string;
-  'Start Time': string;
+  siteName?: string;
+  'Start Time'?: string;
   startTime?: string;
   'End Time'?: string;
   endTime?: string;
@@ -58,16 +62,28 @@ interface AttendanceItem {
   'Start Longitude'?: number;
   startLat?: number;
   startLon?: number;
+  startAccuracy?: number;
+  'Start Accuracy'?: number;
   'End Latitude'?: number;
   'End Longitude'?: number;
   endLat?: number;
   endLon?: number;
+  endAccuracy?: number;
+  'End Accuracy'?: number;
+  'Break Minutes'?: number;
+  breakMinutes?: number;
   'Regular Hours'?: number;
   regularHours?: number;
   'Overtime Hours'?: number;
   overtimeHours?: number;
-  Status: string;
+  Status?: string;
   status?: string;
+  startPhotoKey?: string;
+  startPhotoCapturedAt?: string;
+  startPhotoStatus?: string;
+  endPhotoKey?: string;
+  endPhotoCapturedAt?: string;
+  endPhotoStatus?: string;
 }
 
 interface AuditLogItem {
@@ -80,13 +96,42 @@ interface AuditLogItem {
   Details: string;
 }
 
+function formatDuration(startStr?: string, endStr?: string): string {
+  if (!startStr) return '—';
+  const start = new Date(startStr).getTime();
+  const end = endStr ? new Date(endStr).getTime() : Date.now();
+  if (isNaN(start) || isNaN(end) || end < start) return '—';
+  const diffMinutes = Math.floor((end - start) / 60000);
+  const hours = Math.floor(diffMinutes / 60);
+  const mins = diffMinutes % 60;
+  return `${hours}h ${mins}m${!endStr ? ' (active)' : ''}`;
+}
+
 export default function AdminDashboard({ session, onLogout }: AdminDashboardProps) {
   const [activeTab, setActiveTab] = useState<'overtime' | 'attendance' | 'reports' | 'employees' | 'sites' | 'audit'>('overtime');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshVersion, setRefreshVersion] = useState(0);
+  const [dashboardError, setDashboardError] = useState<string | null>(null);
+  const [attendanceLoading, setAttendanceLoading] = useState(false);
   const [attendanceLoaded, setAttendanceLoaded] = useState(false);
+  const [attendanceError, setAttendanceError] = useState<string | null>(null);
+  const [activeShiftsCount, setActiveShiftsCount] = useState<number | null>(null);
+  const [todayShiftsCount, setTodayShiftsCount] = useState<number | null>(null);
   const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Photo viewer modal state
+  const [previewPhoto, setPreviewPhoto] = useState<{
+    key: string;
+    title: string;
+    employeeName?: string;
+    employeeId?: string;
+    timestamp?: string;
+    lat?: number | null;
+    lon?: number | null;
+    accuracy?: number | null;
+    status?: string;
+  } | null>(null);
 
   // Reports state
   const [reportDate, setReportDate] = useState(() => new Date().toISOString().split('T')[0]);
@@ -216,14 +261,20 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
     const headers = [
       'Shift ID',
       'Employee ID',
+      'Employee Name',
+      'Job Site',
       'Clock In Time',
       'Clock In Lat',
       'Clock In Lon',
-      'Clock In Google Maps URL',
+      'Clock In Accuracy (m)',
+      'Clock In Photo Status',
+      'Clock In Maps URL',
       'Clock Out Time',
       'Clock Out Lat',
       'Clock Out Lon',
-      'Clock Out Google Maps URL',
+      'Clock Out Accuracy (m)',
+      'Clock Out Photo Status',
+      'Clock Out Maps URL',
       'Regular Hours',
       'Overtime Hours',
       'Status'
@@ -231,25 +282,36 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
     const rows = attendanceList.map((att) => {
       const sLat = att.startLat ?? att['Start Latitude'] ?? '';
       const sLon = att.startLon ?? att['Start Longitude'] ?? '';
+      const sAcc = att.startAccuracy ?? att['Start Accuracy'] ?? '';
       const eLat = att.endLat ?? att['End Latitude'] ?? '';
       const eLon = att.endLon ?? att['End Longitude'] ?? '';
+      const eAcc = att.endAccuracy ?? att['End Accuracy'] ?? '';
       const sUrl = sLat !== '' && sLon !== '' ? `https://www.google.com/maps?q=${sLat},${sLon}` : '';
       const eUrl = eLat !== '' && eLon !== '' ? `https://www.google.com/maps?q=${eLat},${eLon}` : '';
+      const empId = att['Employee ID'] || att.employeeId || '';
+      const empName = att.employeeName || employees.find((e) => e.id === empId)?.name || 'Unknown';
+      const siteName = att.siteName || jobSites.find((s) => getSiteId(s) === (att['Site ID'] || att.siteId))?.name || att['Site ID'] || att.siteId || 'Unassigned';
 
       return [
-        att.ID || att.shiftId,
-        att['Employee ID'] || att.employeeId,
-        att['Start Time'] || att.startTime,
+        att.ID || att.shiftId || '',
+        empId,
+        `"${empName.replace(/"/g, '""')}"`,
+        `"${siteName.replace(/"/g, '""')}"`,
+        att['Start Time'] || att.startTime || '',
         sLat,
         sLon,
+        sAcc,
+        att.startPhotoStatus || (att.startPhotoKey ? 'Verified' : 'Legacy Record'),
         sUrl ? `"${sUrl}"` : '',
         att['End Time'] || att.endTime || '',
         eLat,
         eLon,
+        eAcc,
+        att.endPhotoStatus || (att.endPhotoKey ? 'Verified' : (att['End Time'] || att.endTime ? 'Legacy Record' : 'Pending')),
         eUrl ? `"${eUrl}"` : '',
         att['Regular Hours'] || att.regularHours || 0,
         att['Overtime Hours'] || att.overtimeHours || 0,
-        att.Status || att.status,
+        att.Status || att.status || '',
       ];
     });
 
@@ -326,18 +388,60 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
   };
 
   const loadAllData = useCallback(async () => {
+    setDashboardError(null);
     try {
-      // Do not let a slow overtime request delay workforce display.
-      const empRes = await getEmployees(session.token);
-      if (empRes.success && Array.isArray(empRes.employees)) {
-        setEmployees(empRes.employees);
+      // Single unified round-trip to Google Apps Script eliminating cold-start 35s timeout
+      const res = await getAdminDashboardData(session.token);
+      if (res.success && res.data) {
+        if (Array.isArray(res.data.employees)) setEmployees(res.data.employees);
+        if (Array.isArray(res.data.jobSites)) setJobSites(res.data.jobSites);
+        if (Array.isArray(res.data.pendingOvertime)) setOvertimeList(res.data.pendingOvertime as OvertimeItem[]);
+        if (typeof res.data.activeShiftsCount === 'number') setActiveShiftsCount(res.data.activeShiftsCount);
+        if (typeof res.data.todayShiftsCount === 'number') setTodayShiftsCount(res.data.todayShiftsCount);
+      } else {
+        // Fallback to separate getEmployees if unified endpoint is not deployed yet
+        const empRes = await getEmployees(session.token);
+        if (empRes.success && Array.isArray(empRes.employees)) {
+          setEmployees(empRes.employees);
+        } else {
+          setDashboardError(empRes.message || 'Unable to retrieve employee data from server.');
+        }
+        const [siteRes, otRes] = await Promise.allSettled([
+          getJobSites(session.token),
+          getPendingOvertime(session.token),
+        ]);
+        if (siteRes.status === 'fulfilled' && siteRes.value.success && Array.isArray(siteRes.value.sites)) {
+          setJobSites(siteRes.value.sites);
+        }
+        if (otRes.status === 'fulfilled' && otRes.value.success && Array.isArray(otRes.value.overtime)) {
+          setOvertimeList(otRes.value.overtime as OvertimeItem[]);
+        }
       }
-
     } catch (err: unknown) {
       console.error('Failed to load admin data:', err);
+      setDashboardError((err as Error).message || 'Connection error connecting to backend service.');
     } finally {
       setLoading(false);
       setRefreshing(false);
+    }
+  }, [session.token]);
+
+  const loadAttendanceData = useCallback(async () => {
+    setAttendanceLoading(true);
+    setAttendanceError(null);
+    try {
+      const res = await getAttendance(session.token);
+      if (res.success && Array.isArray(res.attendance)) {
+        setAttendanceList(res.attendance as AttendanceItem[]);
+        setAttendanceLoaded(true);
+      } else {
+        setAttendanceError(res.message || 'Failed to load attendance records.');
+      }
+    } catch (err: unknown) {
+      console.error('Failed to load attendance:', err);
+      setAttendanceError((err as Error).message || 'Timeout loading attendance records from server.');
+    } finally {
+      setAttendanceLoading(false);
     }
   }, [session.token]);
 
@@ -346,44 +450,8 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
   }, [loadAllData, refreshVersion]);
 
   useEffect(() => {
-    let cancelled = false;
-    getPendingOvertime(session.token)
-      .then((res) => {
-        if (!cancelled && res.success && Array.isArray(res.overtime)) {
-          setOvertimeList(res.overtime as OvertimeItem[]);
-        }
-      })
-      .catch((err) => { if (!cancelled) console.error('Failed to load overtime:', err); });
-    return () => { cancelled = true; };
-  }, [session.token, refreshVersion]);
-
-  // Reference data is fetched independently of the initial dashboard request.
-  // Keep job sites available for employee assignment without blocking first paint.
-  useEffect(() => {
-    let cancelled = false;
-    getJobSites(session.token)
-      .then((res) => {
-        if (!cancelled && res.success && Array.isArray(res.sites)) setJobSites(res.sites);
-      })
-      .catch((err) => { if (!cancelled) console.error('Failed to load job sites:', err); });
-    return () => { cancelled = true; };
-  }, [session.token, refreshVersion]);
-
-  // Load attendance independently so summary counts remain correct,
-  // without holding the entire admin dashboard behind this request.
-  useEffect(() => {
-    let cancelled = false;
-    setAttendanceLoaded(false);
-    getAttendance(session.token)
-      .then((res) => {
-        if (!cancelled && res.success && Array.isArray(res.attendance)) {
-          setAttendanceList(res.attendance as AttendanceItem[]);
-          setAttendanceLoaded(true);
-        }
-      })
-      .catch((err) => { if (!cancelled) console.error('Failed to load attendance:', err); });
-    return () => { cancelled = true; };
-  }, [session.token, refreshVersion]);
+    loadAttendanceData();
+  }, [loadAttendanceData, refreshVersion]);
 
   // Audit history is not needed for initial dashboard rendering.
   // Load it only when Ateeb opens the audit tab.
@@ -486,25 +554,54 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
         </div>
       )}
 
+      {/* Backend Error Notice Banner */}
+      {dashboardError && (
+        <div className="p-4 rounded-2xl text-sm flex items-start justify-between gap-3 border bg-rose-500/10 border-rose-500/30 text-rose-300">
+          <div className="flex items-start gap-2.5">
+            <span className="text-lg">⚠️</span>
+            <div>
+              <p className="font-bold">Backend Connection Notice</p>
+              <p className="text-xs text-rose-200/90 mt-0.5">{dashboardError}</p>
+            </div>
+          </div>
+          <button
+            onClick={handleRefresh}
+            className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-semibold whitespace-nowrap cursor-pointer transition-all shadow-sm"
+          >
+            Retry Sync
+          </button>
+        </div>
+      )}
+
       {/* Overview Stat Cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         <div className="glass-card rounded-2xl p-4">
           <span className="text-xs font-medium text-slate-400 block mb-1">Total Employees</span>
-          <span className="text-2xl font-bold text-white font-mono">{employees.length}</span>
+          <span className="text-2xl font-bold text-white font-mono">
+            {loading ? '…' : dashboardError ? '—' : employees.length}
+          </span>
         </div>
         <div className="glass-card rounded-2xl p-4 border-emerald-500/20 bg-emerald-500/5">
           <span className="text-xs font-medium text-emerald-400 block mb-1">Clocked-In Now</span>
           <span className="text-2xl font-bold text-emerald-300 font-mono">
-            {attendanceLoaded ? attendanceList.filter((a) => (a.Status || a.status) === 'Active' || !(a['End Time'] || a.endTime)).length : '…'}
+            {activeShiftsCount != null
+              ? activeShiftsCount
+              : attendanceLoaded
+              ? attendanceList.filter((a) => (a.Status || a.status) === 'Active' || !(a['End Time'] || a.endTime)).length
+              : '…'}
           </span>
         </div>
         <div className="glass-card rounded-2xl p-4 border-amber-500/30 bg-amber-500/5">
           <span className="text-xs font-medium text-amber-400 block mb-1">Pending Overtime</span>
-          <span className="text-2xl font-bold text-amber-300 font-mono">{overtimeList.length}</span>
+          <span className="text-2xl font-bold text-amber-300 font-mono">
+            {loading ? '…' : dashboardError ? '—' : overtimeList.length}
+          </span>
         </div>
         <div className="glass-card rounded-2xl p-4">
           <span className="text-xs font-medium text-slate-400 block mb-1">Today's Shifts</span>
-          <span className="text-2xl font-bold text-blue-400 font-mono">{attendanceLoaded ? attendanceList.length : '…'}</span>
+          <span className="text-2xl font-bold text-blue-400 font-mono">
+            {todayShiftsCount != null ? todayShiftsCount : attendanceLoaded ? attendanceList.length : '…'}
+          </span>
         </div>
       </div>
 
@@ -599,37 +696,65 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
             {/* 2. ATTENDANCE TAB */}
             {activeTab === 'attendance' && (
               <div>
-                <div className="flex justify-between items-center mb-4">
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4">
                   <div>
                     <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">
                       Attendance & Shift Ledger
                     </h2>
                     <p className="text-xs text-slate-400">
-                      Live clock-in and clock-out timestamps with exact GPS location links
+                      Verified clock-in and clock-out timestamps, mandatory selfies, and high-accuracy GPS coordinates
                     </p>
                   </div>
-                  {attendanceList.length > 0 && (
+                  <div className="flex items-center gap-2">
                     <button
-                      onClick={handleExportCsv}
-                      className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-blue-400 hover:text-blue-300 border border-slate-700 text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer shadow-sm"
+                      onClick={loadAttendanceData}
+                      disabled={attendanceLoading}
+                      className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
                     >
-                      <span>📥</span>
-                      <span>Export CSV with GPS</span>
+                      <span className={attendanceLoading ? 'animate-spin' : ''}>↻</span>
+                      <span>Refresh</span>
                     </button>
-                  )}
+                    {attendanceList.length > 0 && (
+                      <button
+                        onClick={handleExportCsv}
+                        className="px-3.5 py-1.5 rounded-xl bg-blue-950/40 hover:bg-blue-900/50 text-blue-400 hover:text-blue-300 border border-blue-800/60 text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer shadow-sm"
+                      >
+                        <span>📥</span>
+                        <span>Export CSV with GPS</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
-                {attendanceList.length === 0 ? (
+
+                {attendanceLoading ? (
+                  <div className="py-12 flex flex-col items-center justify-center text-slate-400 space-y-3">
+                    <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                    <p className="text-xs">Loading attendance ledger from Google Sheets...</p>
+                  </div>
+                ) : attendanceError ? (
+                  <div className="p-6 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-center space-y-3">
+                    <p className="text-sm font-semibold text-rose-300">Connection Error Loading Attendance</p>
+                    <p className="text-xs text-rose-200/80">{attendanceError}</p>
+                    <button
+                      onClick={loadAttendanceData}
+                      className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-semibold cursor-pointer transition-all shadow-sm"
+                    >
+                      Retry Loading Attendance
+                    </button>
+                  </div>
+                ) : attendanceList.length === 0 ? (
                   <p className="text-sm text-slate-500 py-8 text-center">No attendance shifts recorded for today yet.</p>
                 ) : (
                   <div className="overflow-x-auto">
                     <table className="w-full text-left text-xs text-slate-300">
                       <thead className="text-[10px] uppercase tracking-wider text-slate-400 border-b border-slate-700/80">
                         <tr>
-                          <th className="py-2.5 pr-4">Shift ID</th>
-                          <th className="py-2.5 pr-4">Employee</th>
-                          <th className="py-2.5 pr-4">Clock In (Time & GPS)</th>
-                          <th className="py-2.5 pr-4">Clock Out (Time & GPS)</th>
-                          <th className="py-2.5 pr-4">Hours (Reg / OT)</th>
+                          <th className="py-2.5 pr-3">Employee</th>
+                          <th className="py-2.5 pr-3">Job Site</th>
+                          <th className="py-2.5 pr-3">Clock In (Time, Selfie & GPS)</th>
+                          <th className="py-2.5 pr-3">Clock Out (Time, Selfie & GPS)</th>
+                          <th className="py-2.5 pr-3">Duration</th>
+                          <th className="py-2.5 pr-3">Hours (Reg / OT)</th>
                           <th className="py-2.5">Status</th>
                         </tr>
                       </thead>
@@ -637,40 +762,104 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                         {attendanceList.map((att) => {
                           const sLat = att.startLat ?? att['Start Latitude'];
                           const sLon = att.startLon ?? att['Start Longitude'];
+                          const sAcc = att.startAccuracy ?? att['Start Accuracy'];
                           const eLat = att.endLat ?? att['End Latitude'];
                           const eLon = att.endLon ?? att['End Longitude'];
+                          const eAcc = att.endAccuracy ?? att['End Accuracy'];
+                          const empId = att['Employee ID'] || att.employeeId || '—';
+                          const empName = att.employeeName || employees.find((e) => e.id === empId)?.name || 'Labourer';
+                          const siteId = att['Site ID'] || att.siteId || '';
+                          const siteName = att.siteName || jobSites.find((s) => getSiteId(s) === siteId)?.name || siteId || 'Unassigned';
+                          const durationStr = formatDuration(att['Start Time'] || att.startTime, att['End Time'] || att.endTime);
 
                           return (
                             <tr key={att.ID || att.shiftId} className="hover:bg-slate-800/30">
-                              <td className="py-3 pr-4 font-mono text-slate-400">{att.ID || att.shiftId}</td>
-                              <td className="py-3 pr-4 font-mono font-medium text-white">
-                                {att['Employee ID'] || att.employeeId}
+                              {/* Employee Name & ID */}
+                              <td className="py-3 pr-3">
+                                <div className="font-semibold text-white">{empName}</div>
+                                <div className="text-[11px] font-mono text-blue-400">{empId}</div>
+                                {att.ID && (
+                                  <div className="text-[9px] font-mono text-slate-500 truncate max-w-[100px]">
+                                    #{att.ID}
+                                  </div>
+                                )}
                               </td>
-                              <td className="py-3 pr-4">
+
+                              {/* Job Site */}
+                              <td className="py-3 pr-3">
+                                <span className="px-2 py-0.5 rounded-lg text-[11px] font-medium bg-slate-800 text-slate-300 border border-slate-700">
+                                  {siteName}
+                                </span>
+                              </td>
+
+                              {/* Clock In */}
+                              <td className="py-3 pr-3">
                                 <div className="text-white font-medium">
                                   {new Date(att['Start Time'] || att.startTime || Date.now()).toLocaleTimeString([], {
                                     hour: '2-digit',
                                     minute: '2-digit',
                                   })}
                                 </div>
-                                {sLat != null && sLon != null && !isNaN(Number(sLat)) ? (
-                                  <a
-                                    href={`https://www.google.com/maps?q=${sLat},${sLon}`}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="inline-flex items-center gap-1 text-[11px] font-mono text-emerald-400 hover:text-emerald-300 hover:underline mt-0.5"
-                                  >
-                                    <span>📍</span>
-                                    <span>
-                                      {Number(sLat).toFixed(4)}, {Number(sLon).toFixed(4)}
-                                    </span>
-                                    <span className="text-[9px]">↗</span>
-                                  </a>
-                                ) : (
-                                  <span className="text-[10px] text-slate-500">—</span>
-                                )}
+                                <div className="flex flex-col gap-0.5 mt-1">
+                                  {att.startPhotoKey ? (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setPreviewPhoto({
+                                          key: att.startPhotoKey || '',
+                                          title: 'Clock-in Selfie',
+                                          employeeName: empName,
+                                          employeeId: empId,
+                                          timestamp: att.startPhotoCapturedAt || att['Start Time'] || att.startTime,
+                                          lat: sLat,
+                                          lon: sLon,
+                                          accuracy: sAcc,
+                                          status: att.startPhotoStatus || 'Verified',
+                                        })
+                                      }
+                                      className="inline-flex items-center gap-1 text-[11px] text-blue-400 hover:text-blue-300 hover:underline cursor-pointer font-medium"
+                                    >
+                                      <span>📸</span>
+                                      <span>View Selfie</span>
+                                    </button>
+                                  ) : att.startPhotoStatus === 'Legacy Record' ? (
+                                    <span className="text-[10px] text-slate-500 italic">Legacy Record</span>
+                                  ) : null}
+
+                                  {sLat != null && sLon != null && !isNaN(Number(sLat)) ? (
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <a
+                                        href={`https://www.google.com/maps?q=${sLat},${sLon}`}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="inline-flex items-center gap-0.5 text-[10px] font-mono text-emerald-400 hover:text-emerald-300 hover:underline"
+                                      >
+                                        <span>📍</span>
+                                        <span>
+                                          {Number(sLat).toFixed(4)}, {Number(sLon).toFixed(4)}
+                                        </span>
+                                        <span className="text-[8px]">↗</span>
+                                      </a>
+                                      {sAcc != null && (
+                                        <span
+                                          className={`text-[9px] px-1 py-0.2 rounded font-mono ${
+                                            sAcc <= 30
+                                              ? 'bg-emerald-500/10 text-emerald-400'
+                                              : 'bg-amber-500/10 text-amber-400'
+                                          }`}
+                                        >
+                                          ±{Math.round(sAcc)}m
+                                        </span>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    <span className="text-[10px] text-slate-500">—</span>
+                                  )}
+                                </div>
                               </td>
-                              <td className="py-3 pr-4">
+
+                              {/* Clock Out */}
+                              <td className="py-3 pr-3">
                                 {att['End Time'] || att.endTime ? (
                                   <>
                                     <div className="text-white font-medium">
@@ -679,22 +868,62 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                                         minute: '2-digit',
                                       })}
                                     </div>
-                                    {eLat != null && eLon != null && !isNaN(Number(eLat)) ? (
-                                      <a
-                                        href={`https://www.google.com/maps?q=${eLat},${eLon}`}
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        className="inline-flex items-center gap-1 text-[11px] font-mono text-emerald-400 hover:text-emerald-300 hover:underline mt-0.5"
-                                      >
-                                        <span>📍</span>
-                                        <span>
-                                          {Number(eLat).toFixed(4)}, {Number(eLon).toFixed(4)}
-                                        </span>
-                                        <span className="text-[9px]">↗</span>
-                                      </a>
-                                    ) : (
-                                      <span className="text-[10px] text-slate-500">—</span>
-                                    )}
+                                    <div className="flex flex-col gap-0.5 mt-1">
+                                      {att.endPhotoKey ? (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            setPreviewPhoto({
+                                              key: att.endPhotoKey || '',
+                                              title: 'Clock-out Selfie',
+                                              employeeName: empName,
+                                              employeeId: empId,
+                                              timestamp: att.endPhotoCapturedAt || att['End Time'] || att.endTime,
+                                              lat: eLat,
+                                              lon: eLon,
+                                              accuracy: eAcc,
+                                              status: att.endPhotoStatus || 'Verified',
+                                            })
+                                          }
+                                          className="inline-flex items-center gap-1 text-[11px] text-blue-400 hover:text-blue-300 hover:underline cursor-pointer font-medium"
+                                        >
+                                          <span>📸</span>
+                                          <span>View Selfie</span>
+                                        </button>
+                                      ) : att.endPhotoStatus === 'Legacy Record' ? (
+                                        <span className="text-[10px] text-slate-500 italic">Legacy Record</span>
+                                      ) : null}
+
+                                      {eLat != null && eLon != null && !isNaN(Number(eLat)) ? (
+                                        <div className="flex items-center gap-1.5 flex-wrap">
+                                          <a
+                                            href={`https://www.google.com/maps?q=${eLat},${eLon}`}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="inline-flex items-center gap-0.5 text-[10px] font-mono text-emerald-400 hover:text-emerald-300 hover:underline"
+                                          >
+                                            <span>📍</span>
+                                            <span>
+                                              {Number(eLat).toFixed(4)}, {Number(eLon).toFixed(4)}
+                                            </span>
+                                            <span className="text-[8px]">↗</span>
+                                          </a>
+                                          {eAcc != null && (
+                                            <span
+                                              className={`text-[9px] px-1 py-0.2 rounded font-mono ${
+                                                eAcc <= 30
+                                                  ? 'bg-emerald-500/10 text-emerald-400'
+                                                  : 'bg-amber-500/10 text-amber-400'
+                                              }`}
+                                            >
+                                              ±{Math.round(eAcc)}m
+                                            </span>
+                                          )}
+                                        </div>
+                                      ) : (
+                                        <span className="text-[10px] text-slate-500">—</span>
+                                      )}
+                                    </div>
                                   </>
                                 ) : (
                                   <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20">
@@ -702,9 +931,20 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                                   </span>
                                 )}
                               </td>
-                              <td className="py-3 pr-4 font-mono">
-                                {att['Regular Hours'] || att.regularHours || 0}h / {att['Overtime Hours'] || att.overtimeHours || 0}h
+
+                              {/* Duration */}
+                              <td className="py-3 pr-3 font-mono text-slate-300 text-[11px] whitespace-nowrap">
+                                {durationStr}
                               </td>
+
+                              {/* Hours (Reg / OT) */}
+                              <td className="py-3 pr-3 font-mono text-[11px] whitespace-nowrap">
+                                <span className="text-white">{att['Regular Hours'] || att.regularHours || 0}h</span>
+                                <span className="text-slate-500 mx-1">/</span>
+                                <span className="text-blue-400 font-semibold">{att['Overtime Hours'] || att.overtimeHours || 0}h</span>
+                              </td>
+
+                              {/* Status */}
                               <td className="py-3">
                                 <span
                                   className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
@@ -1435,6 +1675,24 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
         onClose={() => setShowPinModal(false)}
         onSuccess={() => setActionMessage({ type: 'success', text: 'Administrator PIN updated successfully!' })}
       />
+
+      {/* Verified Attendance Photo Preview Modal */}
+      {previewPhoto && (
+        <PhotoModal
+          isOpen={Boolean(previewPhoto)}
+          photoKey={previewPhoto.key}
+          token={session.token}
+          title={previewPhoto.title}
+          employeeName={previewPhoto.employeeName}
+          employeeId={previewPhoto.employeeId}
+          timestamp={previewPhoto.timestamp}
+          lat={previewPhoto.lat}
+          lon={previewPhoto.lon}
+          accuracy={previewPhoto.accuracy}
+          status={previewPhoto.status}
+          onClose={() => setPreviewPhoto(null)}
+        />
+      )}
     </div>
   );
 }
