@@ -1,22 +1,18 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import dynamic from 'next/dynamic';
 import {
   UserSession,
   JobSite,
   EmployeeProfile,
-  getEmployees,
-  getJobSites,
   createEmployee,
   updateEmployee,
-  getAttendance,
-  getPendingOvertime,
   approveOvertime,
-  getAuditLogs,
-  generateDailyReport,
-  getAdminDashboardData,
 } from '@/lib/api';
 import ChangePinModal from '@/components/ChangePinModal';
-import JobSiteModal from '@/components/JobSiteModal';
-import PhotoModal from '@/components/PhotoModal';
+import { useAdminDashboard, useAdminAttendance, useAdminAuditLogs, useDailyReport } from '@/lib/useDataLayer';
+
+const JobSiteModal = dynamic(() => import('@/components/JobSiteModal'), { ssr: false });
+const PhotoModal = dynamic(() => import('@/components/PhotoModal'), { ssr: false });
 
 interface DailyReportData {
   date: string;
@@ -109,17 +105,9 @@ function formatDuration(startStr?: string, endStr?: string): string {
 
 export default function AdminDashboard({ session, onLogout }: AdminDashboardProps) {
   const [activeTab, setActiveTab] = useState<'overtime' | 'attendance' | 'reports' | 'employees' | 'sites' | 'audit'>('overtime');
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [refreshVersion, setRefreshVersion] = useState(0);
-  const [employeesLoaded, setEmployeesLoaded] = useState(false);
-  const [dashboardError, setDashboardError] = useState<string | null>(null);
-  const [attendanceLoading, setAttendanceLoading] = useState(false);
-  const [attendanceLoaded, setAttendanceLoaded] = useState(false);
-  const [attendanceError, setAttendanceError] = useState<string | null>(null);
-  const [activeShiftsCount, setActiveShiftsCount] = useState<number | null>(null);
-  const [todayShiftsCount, setTodayShiftsCount] = useState<number | null>(null);
   const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [isManualSyncing, setIsManualSyncing] = useState(false);
+  const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
 
   // Photo viewer modal state
   const [previewPhoto, setPreviewPhoto] = useState<{
@@ -136,15 +124,52 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
 
   // Reports state
   const [reportDate, setReportDate] = useState(() => new Date().toISOString().split('T')[0]);
-  const [dailyReport, setDailyReport] = useState<DailyReportData | null>(null);
-  const [loadingReport, setLoadingReport] = useState(false);
 
-  // Data states
-  const [employees, setEmployees] = useState<EmployeeProfile[]>([]);
-  const [jobSites, setJobSites] = useState<JobSite[]>([]);
-  const [overtimeList, setOvertimeList] = useState<OvertimeItem[]>([]);
-  const [attendanceList, setAttendanceList] = useState<AttendanceItem[]>([]);
-  const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>([]);
+  // Centralized SWR Data Layer
+  const {
+    employees,
+    jobSites,
+    pendingOvertime: rawPendingOvertime,
+    activeShiftsCount,
+    todayShiftsCount,
+    totalEmployeesCount,
+    isLoading: isDashboardLoading,
+    isValidating: isDashboardValidating,
+    hasCachedData,
+    error: dashboardError,
+    addEmployeeLocally,
+    updateEmployeeLocally,
+    addJobSiteLocally,
+    updateJobSiteLocally,
+    approveOvertimeLocally,
+    syncNow,
+  } = useAdminDashboard(session.token);
+
+  const overtimeList = (rawPendingOvertime || []) as OvertimeItem[];
+
+  const {
+    attendance: rawAttendance,
+    isLoading: attendanceLoading,
+    isValidating: attendanceValidating,
+    error: attendanceError,
+    refreshAttendance,
+  } = useAdminAttendance(session.token);
+
+  const attendanceList = (rawAttendance || []) as AttendanceItem[];
+
+  const {
+    auditLogs: rawAuditLogs,
+    isLoading: auditLoading,
+  } = useAdminAuditLogs(session.token, activeTab === 'audit');
+
+  const auditLogs = (rawAuditLogs || []) as AuditLogItem[];
+
+  const {
+    report: dailyReportData,
+    isLoading: loadingReport,
+  } = useDailyReport(session.token, reportDate);
+
+  const dailyReport = dailyReportData as DailyReportData | null;
 
   // Modals state
   const [showAddEmpModal, setShowAddEmpModal] = useState(false);
@@ -202,12 +227,20 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
         pin: editEmpPin.trim() || undefined,
       });
       if (res.success) {
+        const confirmed = res.employee || {
+          id: editEmpId.trim().toUpperCase(),
+          name: editEmpName.trim(),
+          phone: editEmpPhone.trim(),
+          role: editingEmp.role || 'Labourer',
+          siteId: editEmpSiteId.trim(),
+          status: editEmpStatus,
+        };
+        updateEmployeeLocally(confirmed as EmployeeProfile);
         setActionMessage({
           type: 'success',
           text: `Employee ${editEmpName} updated successfully (ID: ${editEmpId.trim().toUpperCase()})!`,
         });
         setEditingEmp(null);
-        handleRefresh();
       } else {
         setActionMessage({ type: 'error', text: res.message || 'Failed to update employee' });
       }
@@ -236,6 +269,16 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
       });
       if (res.success) {
         const assignedId = (res as { employeeId?: string; employee?: { id: string } }).employeeId || (res as { employee?: { id: string } }).employee?.id || 'Registered';
+        const confirmed = (res as { employee?: Partial<EmployeeProfile> }).employee;
+        const newEmpObj: EmployeeProfile = {
+          id: assignedId,
+          name: confirmed?.name || newEmpName.trim(),
+          phone: confirmed?.phone || newEmpPhone.trim(),
+          role: 'Labourer',
+          siteId: confirmed?.siteId || newEmpSiteId.trim(),
+          status: confirmed?.status || 'Active',
+        };
+        addEmployeeLocally(newEmpObj);
         setActionMessage({
           type: 'success',
           text: `Labourer ${newEmpName} registered successfully! Assigned ID: ${assignedId}${newEmpSiteId ? ` (Assigned to ${jobSites.find(s => getSiteId(s) === newEmpSiteId.trim())?.name || newEmpSiteId.trim()})` : ''}`,
@@ -246,23 +289,6 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
         setNewEmpPhone('');
         setNewEmpPin('');
         setNewEmpSiteId('');
-        // The write is confirmed by the server. Show the new employee now,
-        // without waiting for a potentially slow follow-up Sheets read.
-        if (assignedId !== 'Registered') {
-          const confirmed = (res as { employee?: Partial<EmployeeProfile> }).employee;
-          setEmployees((previous) => previous.some((emp) => emp.id === assignedId)
-            ? previous
-            : [...previous, {
-                id: assignedId,
-                name: confirmed?.name || newEmpName.trim(),
-                phone: confirmed?.phone || newEmpPhone.trim(),
-                role: 'Labourer',
-                siteId: confirmed?.siteId || newEmpSiteId.trim(),
-                status: confirmed?.status || 'Active',
-              } as EmployeeProfile]);
-          setEmployeesLoaded(true);
-        }
-        handleRefresh();
       } else {
         setActionMessage({ type: 'error', text: res.message || 'Failed to create employee' });
       }
@@ -344,25 +370,11 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
     document.body.removeChild(link);
   };
 
-  const handleGenerateReport = useCallback(
-    async (selectedDate?: string) => {
-      setLoadingReport(true);
-      try {
-        const targetDate = selectedDate || reportDate;
-        const res = await generateDailyReport(session.token, targetDate);
-        if (res.success && res.report) {
-          setDailyReport(res.report as DailyReportData);
-        } else {
-          setActionMessage({ type: 'error', text: res.message || 'Failed to generate daily report' });
-        }
-      } catch (err: unknown) {
-        setActionMessage({ type: 'error', text: (err as Error).message });
-      } finally {
-        setLoadingReport(false);
-      }
-    },
-    [session.token, reportDate]
-  );
+  const handleGenerateReport = (dateStr?: string) => {
+    if (dateStr) {
+      setReportDate(dateStr);
+    }
+  };
 
   const handleExportReportCsv = () => {
     if (!dailyReport) return;
@@ -404,112 +416,30 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
     document.body.removeChild(link);
   };
 
-  const loadAllData = useCallback(async () => {
-    setDashboardError(null);
+  const handleRefresh = async () => {
+    setIsManualSyncing(true);
+    setSyncFeedback(null);
     try {
-      // Single unified round-trip to Google Apps Script eliminating cold-start 35s timeout
-      const res = await getAdminDashboardData(session.token);
-      if (res.success && res.data) {
-        if (Array.isArray(res.data.employees)) {
-          setEmployees(res.data.employees);
-          setEmployeesLoaded(true);
-        }
-        if (Array.isArray(res.data.jobSites)) setJobSites(res.data.jobSites);
-        if (Array.isArray(res.data.pendingOvertime)) setOvertimeList(res.data.pendingOvertime as OvertimeItem[]);
-        if (typeof res.data.activeShiftsCount === 'number') setActiveShiftsCount(res.data.activeShiftsCount);
-        if (typeof res.data.todayShiftsCount === 'number') setTodayShiftsCount(res.data.todayShiftsCount);
+      const [res] = await Promise.all([syncNow(), refreshAttendance()]);
+      if (res && !res.success) {
+        setActionMessage({ type: 'error', text: res.message || 'Sync failed. Retrying in background.' });
       } else {
-        // Fallback to separate getEmployees if unified endpoint is not deployed yet
-        const [empResult, siteRes, otRes] = await Promise.allSettled([
-          getEmployees(session.token),
-          getJobSites(session.token),
-          getPendingOvertime(session.token),
-        ]);
-        if (empResult.status === 'fulfilled' && empResult.value.success && Array.isArray(empResult.value.employees)) {
-          setEmployees(empResult.value.employees);
-          setEmployeesLoaded(true);
-        } else {
-          setDashboardError(empResult.status === 'fulfilled'
-            ? (empResult.value.message || 'Unable to retrieve employee data from server.')
-            : 'Unable to retrieve employee data from server.');
-        }
-        if (siteRes.status === 'fulfilled' && siteRes.value.success && Array.isArray(siteRes.value.sites)) {
-          setJobSites(siteRes.value.sites);
-        }
-        if (otRes.status === 'fulfilled' && otRes.value.success && Array.isArray(otRes.value.overtime)) {
-          setOvertimeList(otRes.value.overtime as OvertimeItem[]);
-        }
+        setSyncFeedback('Synced ✓');
+        setTimeout(() => setSyncFeedback(null), 2500);
       }
-    } catch (err: unknown) {
-      console.error('Failed to load admin data:', err);
-      setDashboardError((err as Error).message || 'Connection error connecting to backend service.');
+    } catch (e: unknown) {
+      setActionMessage({ type: 'error', text: (e as Error).message || 'Sync encountered network timeout.' });
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      setIsManualSyncing(false);
     }
-  }, [session.token]);
-
-  const loadAttendanceData = useCallback(async () => {
-    setAttendanceLoading(true);
-    setAttendanceError(null);
-    try {
-      const res = await getAttendance(session.token);
-      if (res.success && Array.isArray(res.attendance)) {
-        setAttendanceList(res.attendance as AttendanceItem[]);
-        setAttendanceLoaded(true);
-      } else {
-        setAttendanceError(res.message || 'Failed to load attendance records.');
-      }
-    } catch (err: unknown) {
-      console.error('Failed to load attendance:', err);
-      setAttendanceError((err as Error).message || 'Timeout loading attendance records from server.');
-    } finally {
-      setAttendanceLoading(false);
-    }
-  }, [session.token]);
-
-  useEffect(() => {
-    loadAllData();
-  }, [loadAllData, refreshVersion]);
-
-  useEffect(() => {
-    loadAttendanceData();
-  }, [loadAttendanceData, refreshVersion]);
-
-  // Audit history is not needed for initial dashboard rendering.
-  // Load it only when Ateeb opens the audit tab.
-  useEffect(() => {
-    if (activeTab !== 'audit') return;
-    let cancelled = false;
-    getAuditLogs(session.token, 20)
-      .then((res) => {
-        if (!cancelled && res.success && Array.isArray(res.logs)) {
-          setAuditLogs(res.logs as AuditLogItem[]);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) console.error('Failed to load audit logs:', err);
-      });
-    return () => { cancelled = true; };
-  }, [activeTab, session.token, refreshVersion]);
-
-  useEffect(() => {
-    if (activeTab === 'reports' && !dailyReport) {
-      handleGenerateReport();
-    }
-  }, [activeTab, dailyReport, handleGenerateReport]);
-
-  const handleRefresh = () => {
-    setRefreshing(true);
-    setRefreshVersion((v) => v + 1);
   };
 
   const handleApproveOvertime = async (otId: string) => {
     try {
       const res = await approveOvertime(session.token, otId);
       if (res.success) {
+        approveOvertimeLocally(otId);
         setActionMessage({ type: 'success', text: `Overtime record ${otId} approved successfully!` });
-        handleRefresh();
       } else {
         setActionMessage({ type: 'error', text: res.message || 'Failed to approve overtime' });
       }
@@ -537,6 +467,12 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
           </div>
         </div>
         <div className="flex items-center gap-3">
+          {(isDashboardValidating || attendanceValidating) && !isManualSyncing && (
+            <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-semibold bg-blue-500/10 text-blue-400 border border-blue-500/20">
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-ping" />
+              Syncing...
+            </span>
+          )}
           <button
             onClick={() => setShowPinModal(true)}
             className="px-3.5 py-2 text-xs font-semibold uppercase tracking-wider text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700 rounded-xl transition-all cursor-pointer"
@@ -545,11 +481,11 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
           </button>
           <button
             onClick={handleRefresh}
-            disabled={refreshing}
+            disabled={isManualSyncing}
             className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-blue-400 hover:text-blue-300 bg-blue-950/40 hover:bg-blue-900/50 border border-blue-800/60 rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
           >
-            <span className={refreshing ? 'animate-spin' : ''}>↻</span>
-            <span>{refreshing ? 'Syncing...' : 'Sync Data'}</span>
+            <span className={isManualSyncing ? 'animate-spin' : ''}>↻</span>
+            <span>{isManualSyncing ? 'Syncing...' : syncFeedback || 'Sync Data'}</span>
           </button>
           <button
             onClick={onLogout}
@@ -578,7 +514,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
       )}
 
       {/* Backend Error Notice Banner */}
-      {dashboardError && (
+      {dashboardError && !hasCachedData && (
         <div className="p-4 rounded-2xl text-sm flex items-start justify-between gap-3 border bg-rose-500/10 border-rose-500/30 text-rose-300">
           <div className="flex items-start gap-2.5">
             <span className="text-lg">⚠️</span>
@@ -601,7 +537,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
         <div className="glass-card rounded-2xl p-4">
           <span className="text-xs font-medium text-slate-400 block mb-1">Total Employees</span>
           <span className="text-2xl font-bold text-white font-mono">
-            {!employeesLoaded ? '…' : employees.length}
+            {hasCachedData ? employees.length : isDashboardLoading ? '…' : dashboardError ? '—' : 0}
           </span>
         </div>
         <div className="glass-card rounded-2xl p-4 border-emerald-500/20 bg-emerald-500/5">
@@ -609,21 +545,25 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
           <span className="text-2xl font-bold text-emerald-300 font-mono">
             {activeShiftsCount != null
               ? activeShiftsCount
-              : attendanceLoaded
+              : !attendanceLoading
               ? attendanceList.filter((a) => (a.Status || a.status) === 'Active' || !(a['End Time'] || a.endTime)).length
-              : '…'}
+              : hasCachedData ? 0 : '…'}
           </span>
         </div>
         <div className="glass-card rounded-2xl p-4 border-amber-500/30 bg-amber-500/5">
           <span className="text-xs font-medium text-amber-400 block mb-1">Pending Overtime</span>
           <span className="text-2xl font-bold text-amber-300 font-mono">
-            {loading ? '…' : dashboardError ? '—' : overtimeList.length}
+            {hasCachedData ? overtimeList.length : isDashboardLoading ? '…' : dashboardError ? '—' : 0}
           </span>
         </div>
         <div className="glass-card rounded-2xl p-4">
           <span className="text-xs font-medium text-slate-400 block mb-1">Today's Shifts</span>
           <span className="text-2xl font-bold text-blue-400 font-mono">
-            {todayShiftsCount != null ? todayShiftsCount : attendanceLoaded ? attendanceList.length : '…'}
+            {todayShiftsCount != null
+              ? todayShiftsCount
+              : !attendanceLoading
+              ? attendanceList.length
+              : hasCachedData ? 0 : '…'}
           </span>
         </div>
       </div>
@@ -654,7 +594,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
 
       {/* Main Content Area */}
       <main className="glass-panel rounded-3xl p-6 min-h-[350px]">
-        {loading ? (
+        {isDashboardLoading ? (
           <div className="py-12 flex flex-col items-center justify-center text-slate-400 space-y-3">
             <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
             <p className="text-sm">Fetching real records from Google Sheets...</p>
@@ -730,7 +670,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                   </div>
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={loadAttendanceData}
+                      onClick={() => refreshAttendance()}
                       disabled={attendanceLoading}
                       className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
                     >
@@ -759,7 +699,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                     <p className="text-sm font-semibold text-rose-300">Connection Error Loading Attendance</p>
                     <p className="text-xs text-rose-200/80">{attendanceError}</p>
                     <button
-                      onClick={loadAttendanceData}
+                      onClick={() => refreshAttendance()}
                       className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-semibold cursor-pointer transition-all shadow-sm"
                     >
                       Retry Loading Attendance
@@ -1186,8 +1126,10 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                 </div>
                 {employees.length === 0 ? (
                   <p className="text-sm text-slate-500 py-8 text-center">
-                    {!employeesLoaded
-                      ? (dashboardError ? 'Unable to load employees. Please retry Sync Data.' : 'Loading employee records…')
+                    {isDashboardLoading && !hasCachedData
+                      ? 'Loading employee records…'
+                      : dashboardError && !hasCachedData
+                      ? 'Unable to load employees. Please retry Sync Data.'
                       : 'No employee records found in Google Sheets.'}
                   </p>
                 ) : (
@@ -1285,16 +1227,24 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
 
                 {jobSites.length === 0 ? (
                   <div className="py-12 text-center">
-                    <p className="text-sm text-slate-400 mb-3">No job sites found in Google Sheets.</p>
-                    <button
-                      onClick={() => {
-                        setSelectedSiteToEdit(null);
-                        setShowSiteModal(true);
-                      }}
-                      className="px-4 py-2 rounded-xl bg-blue-600 text-white text-xs font-semibold shadow-md hover:bg-blue-500"
-                    >
-                      Create First Job Site
-                    </button>
+                    <p className="text-sm text-slate-400 mb-3">
+                      {isDashboardLoading && !hasCachedData
+                        ? 'Loading job sites…'
+                        : dashboardError && !hasCachedData
+                        ? 'Unable to load job sites. Please retry Sync Data.'
+                        : 'No job sites found in Google Sheets.'}
+                    </p>
+                    {(!isDashboardLoading || hasCachedData) && (
+                      <button
+                        onClick={() => {
+                          setSelectedSiteToEdit(null);
+                          setShowSiteModal(true);
+                        }}
+                        className="px-4 py-2 rounded-xl bg-blue-600 text-white text-xs font-semibold shadow-md hover:bg-blue-500"
+                      >
+                        Create First Job Site
+                      </button>
+                    )}
                   </div>
                 ) : (
                   <div className="overflow-x-auto">
@@ -1691,17 +1641,15 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
             if (savedSite) {
               const savedId = savedSite.ID || savedSite.id;
               if (savedId) {
-                setJobSites((current) => {
-                  const index = current.findIndex((site) => (site.ID || site.id) === savedId);
-                  return index === -1
-                    ? [...current, savedSite]
-                    : current.map((site, i) => i === index ? { ...site, ...savedSite } : site);
-                });
+                if (selectedSiteToEdit) {
+                  updateJobSiteLocally(savedSite);
+                } else {
+                  addJobSiteLocally(savedSite);
+                }
               }
             }
             setShowSiteModal(false);
             setSelectedSiteToEdit(null);
-            handleRefresh();
           }}
         />
       )}

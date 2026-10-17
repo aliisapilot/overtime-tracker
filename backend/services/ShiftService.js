@@ -33,10 +33,11 @@ var ShiftService = (function() {
    * Acquire script lock for safe concurrency writes
    */
   ShiftServiceClass.prototype._acquireLock = function() {
+    var timeout = Math.min(this.lockTimeout || 10000, 10000);
     if (typeof LockService !== 'undefined' && LockService.getScriptLock) {
       var lock = LockService.getScriptLock();
       try {
-        var acquired = lock.tryLock(this.lockTimeout);
+        var acquired = lock.tryLock(timeout);
         return { lock: lock, acquired: acquired };
       } catch (e) {
         return { lock: null, acquired: false };

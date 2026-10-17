@@ -2,7 +2,7 @@
  * OVERTIME TRACKER — COMPLETE GOOGLE APPS SCRIPT BACKEND
  * Bundled for single-file deployment at script.google.com
  * Owner: Ateeb
- * Generated: 2026-10-15T13:59:47.424Z
+ * Generated: 2026-10-17T19:49:43.746Z
  */
 
 
@@ -431,6 +431,7 @@ var SheetsService = (function() {
   function SheetsServiceClass() {
     this._mockData = null; // Used for local Node tests
     this._rowCache = {};   // Per-request in-memory cache: { sheetName: rows[] }
+    this._headerCache = {};// In-request header cache: { sheetName: headers[] }
     this._spreadsheet = null;
   }
 
@@ -439,6 +440,8 @@ var SheetsService = (function() {
    */
   SheetsServiceClass.prototype.setMockData = function(data) {
     this._mockData = data;
+    this._rowCache = {};
+    this._headerCache = {};
   };
 
   /**
@@ -727,6 +730,24 @@ var SheetsService = (function() {
       return this._rowCache[sheetName];
     }
 
+    // Check Google Apps Script distributed ScriptCache for reference data
+    var cacheKey = 'ss_cache_' + sheetName;
+    if (typeof CacheService !== 'undefined' && CacheService.getScriptCache &&
+        (sheetName === _SHEETS.JOB_SITES || sheetName === _SHEETS.EMPLOYEES)) {
+      try {
+        var cachedJson = CacheService.getScriptCache().get(cacheKey);
+        if (cachedJson) {
+          var parsed = JSON.parse(cachedJson);
+          if (Array.isArray(parsed)) {
+            this._rowCache[sheetName] = parsed;
+            return parsed;
+          }
+        }
+      } catch (cacheReadErr) {
+        // Fall back to sheet read
+      }
+    }
+
     var sheet = this.getOrCreateSheet(sheetName);
     if (!sheet) return [];
     var data = sheet.getDataRange().getValues();
@@ -736,6 +757,7 @@ var SheetsService = (function() {
     }
 
     var headers = data[0];
+    this._headerCache[sheetName] = headers;
     this._rowCache[sheetName] = data.slice(1).map(function(row) {
       var obj = {};
       headers.forEach(function(header, i) {
@@ -745,15 +767,36 @@ var SheetsService = (function() {
       });
       return obj;
     });
+
+    // Populate Google Apps Script ScriptCache for reference tables
+    if (typeof CacheService !== 'undefined' && CacheService.getScriptCache &&
+        (sheetName === _SHEETS.JOB_SITES || sheetName === _SHEETS.EMPLOYEES)) {
+      try {
+        var ttl = sheetName === _SHEETS.JOB_SITES ? 600 : 300; // 10m sites, 5m employees
+        var str = JSON.stringify(this._rowCache[sheetName]);
+        if (str.length < 95000) { // Keep safely within 100KB CacheService limit
+          CacheService.getScriptCache().put(cacheKey, str, ttl);
+        }
+      } catch (cacheWriteErr) {
+        // Cache put failed (e.g. payload exceeded), continue safely without cache
+      }
+    }
+
     return this._rowCache[sheetName];
   };
 
   /**
-   * Invalidate the in-request cache for a sheet after a write
+   * Invalidate both in-request and distributed ScriptCache for a sheet after a write
    * @param {string} sheetName
    */
   SheetsServiceClass.prototype._invalidateCache = function(sheetName) {
     delete this._rowCache[sheetName];
+    delete this._headerCache[sheetName];
+    if (typeof CacheService !== 'undefined' && CacheService.getScriptCache) {
+      try {
+        CacheService.getScriptCache().remove('ss_cache_' + sheetName);
+      } catch (e) {}
+    }
   };
 
   /**
@@ -768,7 +811,7 @@ var SheetsService = (function() {
   };
 
   /**
-   * Append a new row
+   * Append a new row with cached header lookup
    * @param {string} sheetName
    * @param {Object} data
    * @returns {Object}
@@ -781,17 +824,21 @@ var SheetsService = (function() {
     }
 
     var sheet = this.getOrCreateSheet(sheetName);
-    var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    var headers = this._headerCache[sheetName];
+    if (!headers) {
+      headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+      this._headerCache[sheetName] = headers;
+    }
     var rowData = headers.map(function(h) { return data[h] !== undefined ? data[h] : ''; });
     var newRow = sheet.getLastRow() + 1;
     sheet.getRange(newRow, 1, 1, rowData.length).setValues([rowData]);
-    // Invalidate cache so subsequent reads within this request see the new row
+    // Invalidate cache so subsequent reads see the new row
     this._invalidateCache(sheetName);
     return data;
   };
 
   /**
-   * Update a row by ID
+   * Update a row by ID with cached headers
    * @param {string} sheetName
    * @param {string} id
    * @param {Object} data
@@ -813,6 +860,7 @@ var SheetsService = (function() {
     var values = dataRange.getValues();
     if (values.length <= 1) return false;
     var headers = values[0];
+    this._headerCache[sheetName] = headers;
 
     for (var i = 1; i < values.length; i++) {
       if (String(values[i][0]) === String(id)) {
@@ -1158,10 +1206,11 @@ var ShiftService = (function() {
    * Acquire script lock for safe concurrency writes
    */
   ShiftServiceClass.prototype._acquireLock = function() {
+    var timeout = Math.min(this.lockTimeout || 10000, 10000);
     if (typeof LockService !== 'undefined' && LockService.getScriptLock) {
       var lock = LockService.getScriptLock();
       try {
-        var acquired = lock.tryLock(this.lockTimeout);
+        var acquired = lock.tryLock(timeout);
         return { lock: lock, acquired: acquired };
       } catch (e) {
         return { lock: null, acquired: false };
@@ -1944,6 +1993,7 @@ var AdminService = (function() {
       return {
         success: true,
         siteId: siteId,
+        site: siteData,
         jobSite: siteData,
         message: 'Job site created successfully'
       };
@@ -1999,10 +2049,12 @@ var AdminService = (function() {
       var adminName = session ? session.name : 'Admin';
       this.logAudit('SYSTEM', 'update_job_site', 'success', 'Updated site ' + siteId + ': ' + name + ' (' + lat + ', ' + lon + ', ' + geofenceRadius + 'm)', adminName);
 
+      var updatedSite = Object.assign({}, existingSite, updateData);
       return {
         success: true,
         siteId: siteId,
-        jobSite: Object.assign({}, existingSite, updateData),
+        site: updatedSite,
+        jobSite: updatedSite,
         message: 'Job site updated successfully'
       };
     } catch (error) {
@@ -2362,7 +2414,30 @@ var AdminService = (function() {
       var limit = parseInt(params.limit || 100, 10);
       var employeeId = params.employeeId;
 
-      var logs = _SheetsService.getAllRows(_SHEETS.AUDIT_LOGS);
+      var sheet = _SheetsService.getOrCreateSheet(_SHEETS.AUDIT_LOGS);
+      var logs;
+      if (!sheet || _SheetsService._mockData) {
+        logs = _SheetsService.getAllRows(_SHEETS.AUDIT_LOGS);
+      } else {
+        var lastRow = sheet.getLastRow();
+        if (lastRow <= 1) {
+          logs = [];
+        } else if (lastRow > (limit * 2) + 1 && !employeeId) {
+          // Bounded tail read: audit logs are strictly append-only, read only the last limit * 2 rows
+          var startRow = Math.max(2, lastRow - (limit * 2) + 1);
+          var numRows = lastRow - startRow + 1;
+          var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+          var values = sheet.getRange(startRow, 1, numRows, headers.length).getValues();
+          logs = values.map(function(row) {
+            var obj = {};
+            headers.forEach(function(h, i) { if (h) obj[h] = row[i]; });
+            return obj;
+          });
+        } else {
+          logs = _SheetsService.getAllRows(_SHEETS.AUDIT_LOGS);
+        }
+      }
+
       if (employeeId) {
         logs = logs.filter(function(l) { return l['Employee ID'] === employeeId; });
       }

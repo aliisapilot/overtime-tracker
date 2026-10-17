@@ -149,17 +149,59 @@ export async function sendGasRequest<T = Record<string, unknown>>(
       endpointConfigured: true,
     });
 
-    const response = await fetch(GAS_URL, {
-      method: 'POST',
-      headers: {
-        // text/plain;charset=utf-8 is a CORS-safelisted content-type
-        // Prevents browser from issuing an OPTIONS preflight that GAS rejects
-        'Content-Type': 'text/plain;charset=utf-8',
-      },
-      body: JSON.stringify(payload),
-      redirect: 'follow',
-      signal: controller.signal,
-    });
+    let response: Response;
+    const isBrowser = typeof window !== 'undefined';
+
+    // In browser environment, attempt same-origin /api/gas edge proxy first for lower latency and connection reuse
+    if (isBrowser) {
+      try {
+        const edgeRes = await fetch('/api/gas', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+
+        // If edge proxy succeeds or returns expected application status, use it
+        if (edgeRes.ok || (edgeRes.status !== 404 && edgeRes.status !== 502 && edgeRes.status !== 504)) {
+          response = edgeRes;
+        } else {
+          // Fall back to direct GAS endpoint
+          response = await fetch(GAS_URL, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'text/plain;charset=utf-8',
+            },
+            body: JSON.stringify(payload),
+            redirect: 'follow',
+            signal: controller.signal,
+          });
+        }
+      } catch {
+        // Fall back directly to GAS if edge proxy network fails (e.g., local standalone next dev)
+        response = await fetch(GAS_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'text/plain;charset=utf-8',
+          },
+          body: JSON.stringify(payload),
+          redirect: 'follow',
+          signal: controller.signal,
+        });
+      }
+    } else {
+      response = await fetch(GAS_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'text/plain;charset=utf-8',
+        },
+        body: JSON.stringify(payload),
+        redirect: 'follow',
+        signal: controller.signal,
+      });
+    }
 
     clearTimeout(timer);
     const latencyMs = Date.now() - startTime;
@@ -533,8 +575,8 @@ export async function updateEmployee(
 export async function createJobSite(
   token: string,
   data: { name: string; address?: string; latitude: number; longitude: number; geofenceRadius: number }
-): Promise<ApiResponse<{ site: JobSite }>> {
-  return sendGasRequest<{ site: JobSite }>({
+): Promise<ApiResponse<{ site: JobSite; jobSite?: JobSite }>> {
+  const res = await sendGasRequest<{ site?: JobSite; jobSite?: JobSite }>({
     action: 'createJobSite',
     token,
     name: data.name,
@@ -545,6 +587,16 @@ export async function createJobSite(
     longitude: data.longitude,
     geofenceRadius: data.geofenceRadius,
   });
+
+  if (res.success && res.data) {
+    const siteObj = res.data.site || res.data.jobSite;
+    if (siteObj) {
+      res.data.site = siteObj;
+      res.data.jobSite = siteObj;
+    }
+  }
+
+  return res as ApiResponse<{ site: JobSite; jobSite?: JobSite }>;
 }
 
 /**
@@ -553,8 +605,8 @@ export async function createJobSite(
 export async function updateJobSite(
   token: string,
   data: { siteId: string; name: string; address?: string; latitude: number; longitude: number; geofenceRadius: number; status?: string }
-): Promise<ApiResponse<{ site: JobSite }>> {
-  return sendGasRequest<{ site: JobSite }>({
+): Promise<ApiResponse<{ site: JobSite; jobSite?: JobSite }>> {
+  const res = await sendGasRequest<{ site?: JobSite; jobSite?: JobSite }>({
     action: 'updateJobSite',
     token,
     siteId: data.siteId,
@@ -568,6 +620,16 @@ export async function updateJobSite(
     geofenceRadius: data.geofenceRadius,
     status: data.status,
   });
+
+  if (res.success && res.data) {
+    const siteObj = res.data.site || res.data.jobSite;
+    if (siteObj) {
+      res.data.site = siteObj;
+      res.data.jobSite = siteObj;
+    }
+  }
+
+  return res as ApiResponse<{ site: JobSite; jobSite?: JobSite }>;
 }
 
 /**

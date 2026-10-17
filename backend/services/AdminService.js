@@ -109,6 +109,7 @@ var AdminService = (function() {
       return {
         success: true,
         siteId: siteId,
+        site: siteData,
         jobSite: siteData,
         message: 'Job site created successfully'
       };
@@ -164,10 +165,12 @@ var AdminService = (function() {
       var adminName = session ? session.name : 'Admin';
       this.logAudit('SYSTEM', 'update_job_site', 'success', 'Updated site ' + siteId + ': ' + name + ' (' + lat + ', ' + lon + ', ' + geofenceRadius + 'm)', adminName);
 
+      var updatedSite = Object.assign({}, existingSite, updateData);
       return {
         success: true,
         siteId: siteId,
-        jobSite: Object.assign({}, existingSite, updateData),
+        site: updatedSite,
+        jobSite: updatedSite,
         message: 'Job site updated successfully'
       };
     } catch (error) {
@@ -527,7 +530,30 @@ var AdminService = (function() {
       var limit = parseInt(params.limit || 100, 10);
       var employeeId = params.employeeId;
 
-      var logs = _SheetsService.getAllRows(_SHEETS.AUDIT_LOGS);
+      var sheet = _SheetsService.getOrCreateSheet(_SHEETS.AUDIT_LOGS);
+      var logs;
+      if (!sheet || _SheetsService._mockData) {
+        logs = _SheetsService.getAllRows(_SHEETS.AUDIT_LOGS);
+      } else {
+        var lastRow = sheet.getLastRow();
+        if (lastRow <= 1) {
+          logs = [];
+        } else if (lastRow > (limit * 2) + 1 && !employeeId) {
+          // Bounded tail read: audit logs are strictly append-only, read only the last limit * 2 rows
+          var startRow = Math.max(2, lastRow - (limit * 2) + 1);
+          var numRows = lastRow - startRow + 1;
+          var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+          var values = sheet.getRange(startRow, 1, numRows, headers.length).getValues();
+          logs = values.map(function(row) {
+            var obj = {};
+            headers.forEach(function(h, i) { if (h) obj[h] = row[i]; });
+            return obj;
+          });
+        } else {
+          logs = _SheetsService.getAllRows(_SHEETS.AUDIT_LOGS);
+        }
+      }
+
       if (employeeId) {
         logs = logs.filter(function(l) { return l['Employee ID'] === employeeId; });
       }

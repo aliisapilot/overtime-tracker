@@ -1,14 +1,11 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import {
   UserSession,
   ShiftRecord,
   EmployeeProfile,
-  DashboardResponse,
-  getDashboardData,
-  startShift,
-  endShift,
 } from '@/lib/api';
+import { useLabourerDashboard } from '@/lib/useDataLayer';
 import {
   getCurrentPosition,
   categorizeAccuracy,
@@ -17,7 +14,8 @@ import {
 } from '@/lib/geo';
 import ChangePinModal from '@/components/ChangePinModal';
 import SelfieModal from '@/components/SelfieModal';
-import PhotoModal from '@/components/PhotoModal';
+
+const PhotoModal = dynamic(() => import('@/components/PhotoModal'), { ssr: false });
 
 const LiveLocationMap = dynamic(() => import('@/components/LiveLocationMap'), {
   ssr: false,
@@ -43,10 +41,17 @@ interface LabourerDashboardProps {
 }
 
 export default function LabourerDashboard({ session, onLogout }: LabourerDashboardProps) {
-  const [employeeProfile, setEmployeeProfile] = useState<EmployeeProfile>(session.employee);
-  const [shifts, setShifts] = useState<ShiftRecord[]>([]);
-  const [loadingData, setLoadingData] = useState(true);
-  const [activeShift, setActiveShift] = useState<ShiftRecord | null>(null);
+  const {
+    employeeProfile: fetchedProfile,
+    shifts,
+    activeShift,
+    isLoading: loadingData,
+    isValidating,
+    applyConfirmedShift,
+    refreshDashboard,
+  } = useLabourerDashboard(session.token, session.employee.id);
+
+  const employeeProfile: EmployeeProfile = fetchedProfile || session.employee;
 
   // GPS state (Manual check only - no background polling or watchPosition)
   const [gps, setGps] = useState<GpsCoordinates | null>(null);
@@ -86,27 +91,6 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
     : null;
   const isInsideGeofence = distanceMeters != null ? distanceMeters <= geofenceRadius : false;
 
-  // Load employee profile & active shifts — single GAS round-trip
-  const loadData = useCallback(async () => {
-    setLoadingData(true);
-    try {
-      const res: DashboardResponse = await getDashboardData(session.token, session.employee.id);
-      if (res.success) {
-        if (res.employee) {
-          setEmployeeProfile(res.employee);
-        }
-        if (Array.isArray(res.shifts)) {
-          setShifts(res.shifts);
-          setActiveShift(res.activeShift ?? null);
-        }
-      }
-    } catch (err: unknown) {
-      console.error('Failed to load dashboard data:', err);
-    } finally {
-      setLoadingData(false);
-    }
-  }, [session.token, session.employee.id]);
-
   // Explicit, on-demand GPS acquisition (Triggered ONLY when user explicitly clicks Check Location)
   const acquireGps = useCallback(async () => {
     setGpsLoading(true);
@@ -124,11 +108,6 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
       setGpsLoading(false);
     }
   }, []);
-
-  // Phase 2 Compliance: NO background GPS polling or continuous tracking on mount
-  useEffect(() => {
-    loadData();
-  }, [loadData]);
 
   // Open mandatory selfie + fresh GPS modal for clock-in
   const handleOpenStartShiftModal = () => {
@@ -158,25 +137,14 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
 
   // Handle successful shift creation or completion from SelfieModal
   const handleShiftSuccess = (shiftRecord: ShiftRecord) => {
-    if (selfieModalType === 'start') {
-      setActiveShift(shiftRecord);
-      setShifts((prev) => [shiftRecord, ...prev]);
+    const isStart = selfieModalType === 'start';
+    applyConfirmedShift(shiftRecord, isStart);
+    if (isStart) {
       setActionMessage({
         type: 'success',
         text: `Shift started successfully at ${employeeProfile.siteName || assignedSiteId}! Selfie and GPS verified.`,
       });
     } else {
-      if (activeShift) {
-        const completedShift: ShiftRecord = {
-          ...activeShift,
-          ...shiftRecord,
-          Status: 'Completed',
-        };
-        setShifts((prev) => prev.map((s) => (s.ID === activeShift.ID ? completedShift : s)));
-        setActiveShift(null);
-      } else {
-        loadData();
-      }
       setActionMessage({
         type: 'success',
         text: 'Shift ended! Clock-out selfie and GPS verified.',
@@ -198,7 +166,15 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
               {session.employee.name.charAt(0)}
             </div>
             <div>
-              <h1 className="text-xl sm:text-2xl font-bold text-white">{session.employee.name}</h1>
+              <div className="flex items-center gap-2">
+                <h1 className="text-xl sm:text-2xl font-bold text-white">{session.employee.name}</h1>
+                {isValidating && (
+                  <span className="inline-flex sm:hidden items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20 animate-pulse">
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-ping" />
+                    Syncing
+                  </span>
+                )}
+              </div>
               <p className="text-xs sm:text-sm text-slate-400">
                 ID: <span className="font-mono text-blue-400 font-medium">{session.employee.id}</span> • Role:{' '}
                 {session.employee.role} • Site:{' '}
@@ -210,6 +186,20 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {isValidating && (
+            <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20 animate-pulse">
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-ping" />
+              Syncing...
+            </span>
+          )}
+          <button
+            onClick={() => refreshDashboard()}
+            disabled={isValidating}
+            title="Synchronize shifts"
+            className="p-2 text-xs font-semibold text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700 rounded-xl transition-all cursor-pointer disabled:opacity-50"
+          >
+            ↻
+          </button>
           <button
             onClick={() => setShowPinModal(true)}
             className="px-3.5 py-2 text-xs font-semibold uppercase tracking-wider text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700 rounded-xl transition-all cursor-pointer"

@@ -333,9 +333,60 @@ export default {
       }
     }
 
-    // Static site assets fallback via Cloudflare Workers Assets binding
+    // 3. SECURE GAS BACKEND EDGE PROXY
+    // Proxies frontend requests to Google Apps Script over Cloudflare global backbone with connection reuse
+    if (pathname === '/api/gas' && request.method === 'POST') {
+      try {
+        const gasUrl = (env && env.GAS_WEB_APP_URL) || 'https://script.google.com/macros/s/AKfycbzAsJfsSviCiq47tTG6srTqAo4yZTFaGZDG0SQOPZjWNHdMSiyI8ELfuk2FmQ39QPcP/exec';
+        const payloadText = await request.text();
+
+        const gasRes = await fetch(gasUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'text/plain;charset=utf-8',
+          },
+          body: payloadText,
+          redirect: 'follow',
+        });
+
+        const gasBody = await gasRes.text();
+        const headers = new Headers(corsHeaders(request));
+        headers.set('Content-Type', 'application/json');
+        headers.set('Cache-Control', 'private, no-cache, no-store, must-revalidate');
+
+        return new Response(gasBody, {
+          status: gasRes.status,
+          headers,
+        });
+      } catch (proxyErr) {
+        return jsonResponse({
+          success: false,
+          code: 502,
+          message: 'Edge proxy to Google Apps Script failed: ' + (proxyErr.message || String(proxyErr)),
+        }, 502, request);
+      }
+    }
+
+    // 4. Static site assets fallback via Cloudflare Workers Assets binding with edge cache & security headers
     if (env && env.ASSETS) {
-      return env.ASSETS.fetch(request);
+      const assetResponse = await env.ASSETS.fetch(request);
+      const response = new Response(assetResponse.body, assetResponse);
+
+      // Immutably cache content-hashed Next.js assets
+      if (pathname.startsWith('/_next/static/') || pathname.startsWith('/static/')) {
+        response.headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+      } else if (pathname.endsWith('.svg') || pathname.endsWith('.png') || pathname.endsWith('.ico') || pathname.endsWith('.webp')) {
+        response.headers.set('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+      } else {
+        response.headers.set('Cache-Control', 'public, max-age=0, must-revalidate');
+      }
+
+      // Modern security headers
+      response.headers.set('X-Content-Type-Options', 'nosniff');
+      response.headers.set('X-Frame-Options', 'SAMEORIGIN');
+      response.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+
+      return response;
     }
 
     return new Response('Not found', { status: 404 });
