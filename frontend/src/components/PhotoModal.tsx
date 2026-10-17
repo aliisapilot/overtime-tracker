@@ -14,6 +14,7 @@ interface PhotoModalProps {
   accuracy?: number | null;
   status?: string;
   onClose: () => void;
+  onPurgePhoto?: () => void;
 }
 
 export default function PhotoModal({
@@ -29,6 +30,7 @@ export default function PhotoModal({
   accuracy,
   status = 'Verified',
   onClose,
+  onPurgePhoto,
 }: PhotoModalProps) {
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
@@ -163,7 +165,22 @@ export default function PhotoModal({
         </div>
 
         {/* Footer */}
-        <div className="px-5 py-3 border-t border-slate-800 bg-slate-900/60 flex justify-end">
+        <div className="px-5 py-3 border-t border-slate-800 bg-slate-900/60 flex items-center justify-between">
+          <div>
+            {photoKey && !isLegacy && onPurgePhoto && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onPurgePhoto();
+                }}
+                className="px-3 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-xs font-semibold transition-colors cursor-pointer flex items-center gap-1.5"
+              >
+                <span>🗑️</span>
+                <span>Purge Photo (Retention Policy)</span>
+              </button>
+            )}
+          </div>
           <button
             onClick={onClose}
             className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 transition-colors cursor-pointer"

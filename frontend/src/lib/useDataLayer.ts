@@ -9,11 +9,13 @@ import { useCallback, useEffect } from 'react';
 import {
   AdminDashboardData,
   ApiResponse,
+  ArchivedRecordsData,
   DashboardResponse,
   EmployeeProfile,
   JobSite,
   ShiftRecord,
   getAdminDashboardData,
+  getArchivedRecords,
   getAttendance,
   getAuditLogs,
   getDashboardData,
@@ -184,6 +186,98 @@ export function useAdminDashboard(token: string) {
     );
   }, [mutate]);
 
+  // Targeted Cache Mutation: Archive Employee
+  const archiveEmployeeLocally = useCallback((employeeId: string) => {
+    mutate(
+      (current) => {
+        if (!current) return current;
+        const updatedEmployees = current.employees.map((e) =>
+          e.id === employeeId ? { ...e, status: 'Archived' } : e
+        );
+        const activeCount = updatedEmployees.filter((e) => e.status !== 'Archived').length;
+        return {
+          ...current,
+          employees: updatedEmployees,
+          totalEmployeesCount: activeCount,
+        };
+      },
+      { revalidate: true }
+    );
+  }, [mutate]);
+
+  // Targeted Cache Mutation: Restore Employee
+  const restoreEmployeeLocally = useCallback((restoredEmp: EmployeeProfile) => {
+    mutate(
+      (current) => {
+        if (!current) return current;
+        const updatedEmployees = current.employees.map((e) =>
+          e.id === restoredEmp.id ? { ...e, ...restoredEmp, status: 'Active' } : e
+        );
+        const activeCount = updatedEmployees.filter((e) => e.status !== 'Archived').length;
+        return {
+          ...current,
+          employees: updatedEmployees,
+          totalEmployeesCount: activeCount,
+        };
+      },
+      { revalidate: true }
+    );
+  }, [mutate]);
+
+  // Targeted Cache Mutation: Archive Job Site
+  const archiveJobSiteLocally = useCallback((siteId: string) => {
+    mutate(
+      (current) => {
+        if (!current) return current;
+        const updatedSites = current.jobSites.map((s) => {
+          const sid = s.ID || s.id;
+          return sid === siteId ? { ...s, status: 'Archived', Status: 'Archived' } : s;
+        });
+        return {
+          ...current,
+          jobSites: updatedSites,
+        };
+      },
+      { revalidate: true }
+    );
+  }, [mutate]);
+
+  // Targeted Cache Mutation: Restore Job Site
+  const restoreJobSiteLocally = useCallback((restoredSite: JobSite) => {
+    mutate(
+      (current) => {
+        if (!current) return current;
+        const targetId = restoredSite.ID || restoredSite.id;
+        const updatedSites = current.jobSites.map((s) => {
+          const sid = s.ID || s.id;
+          return sid === targetId ? { ...s, ...restoredSite, status: 'Active', Status: 'Active' } : s;
+        });
+        return {
+          ...current,
+          jobSites: updatedSites,
+        };
+      },
+      { revalidate: true }
+    );
+  }, [mutate]);
+
+  // Targeted Cache Mutation: Void / Cancel Overtime
+  const voidOvertimeLocally = useCallback((overtimeId: string) => {
+    mutate(
+      (current) => {
+        if (!current) return current;
+        const updatedList = current.pendingOvertime.filter(
+          (o: { ID?: string; id?: string }) => (o.ID || o.id) !== overtimeId
+        );
+        return {
+          ...current,
+          pendingOvertime: updatedList,
+        };
+      },
+      { revalidate: true }
+    );
+  }, [mutate]);
+
   // Manual Sync trigger
   const syncNow = useCallback(async () => {
     try {
@@ -202,6 +296,7 @@ export function useAdminDashboard(token: string) {
     activeShiftsCount: data?.activeShiftsCount ?? null,
     todayShiftsCount: data?.todayShiftsCount ?? null,
     totalEmployeesCount: data?.totalEmployeesCount ?? (data?.employees?.length ?? null),
+    archivedCount: data?.archivedCount ?? null,
     isLoading: isLoading && !data,
     isValidating,
     isFirstLoad: isLoading && !data,
@@ -209,9 +304,14 @@ export function useAdminDashboard(token: string) {
     error: error ? (error as Error).message : null,
     addEmployeeLocally,
     updateEmployeeLocally,
+    archiveEmployeeLocally,
+    restoreEmployeeLocally,
     addJobSiteLocally,
     updateJobSiteLocally,
+    archiveJobSiteLocally,
+    restoreJobSiteLocally,
     approveOvertimeLocally,
+    voidOvertimeLocally,
     syncNow,
   };
 }
@@ -239,12 +339,26 @@ export function useAdminAttendance(token: string, date?: string) {
     }
   );
 
+  const voidShiftLocally = useCallback((shiftId: string) => {
+    mutate(
+      (current) => {
+        if (!Array.isArray(current)) return current;
+        return current.map((item: any) => {
+          const id = item.ID || item.shiftId;
+          return id === shiftId ? { ...item, status: 'Voided', Status: 'Voided' } : item;
+        });
+      },
+      { revalidate: true }
+    );
+  }, [mutate]);
+
   return {
     attendance: data || [],
     isLoading: isLoading && !data,
     isValidating,
     error: error ? (error as Error).message : null,
     refreshAttendance: mutate,
+    voidShiftLocally,
   };
 }
 
@@ -382,3 +496,49 @@ export function useLabourerDashboard(token: string, employeeId: string) {
     refreshDashboard: mutate,
   };
 }
+
+/**
+ * Hook: Archived & Voided Records Ledger
+ * Lazily loaded when Ateeb navigates to the Archived Records area
+ */
+export function useArchivedRecords(token: string, enabled: boolean) {
+  const swrKey = token && enabled ? `admin-archived-records-${token.slice(-12)}` : null;
+
+  const { data, error, isLoading, isValidating, mutate } = useSWR<ArchivedRecordsData>(
+    swrKey,
+    async () => {
+      const res = await getArchivedRecords(token);
+      if (!res.success || !res.data) {
+        throw new Error(res.message || 'Failed to retrieve archived records.');
+      }
+      return res.data;
+    },
+    {
+      revalidateOnFocus: false,
+      dedupingInterval: 10000,
+      keepPreviousData: true,
+      shouldRetryOnError: true,
+    }
+  );
+
+  return {
+    archivedData: data,
+    archivedEmployees: data?.archivedEmployees || [],
+    archivedJobSites: data?.archivedJobSites || [],
+    voidedShifts: data?.voidedShifts || [],
+    voidedOvertime: data?.voidedOvertime || [],
+    duplicates: data?.duplicates || [],
+    counts: data?.counts || {
+      archivedEmployees: 0,
+      archivedJobSites: 0,
+      voidedShifts: 0,
+      voidedOvertime: 0,
+      duplicates: 0,
+    },
+    isLoading: isLoading && !data,
+    isValidating,
+    error: error ? (error as Error).message : null,
+    refreshArchivedRecords: mutate,
+  };
+}
+

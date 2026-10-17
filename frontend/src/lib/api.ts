@@ -668,6 +668,99 @@ export interface AdminDashboardData {
   activeShiftsCount: number;
   todayShiftsCount: number;
   totalEmployeesCount: number;
+  archivedCount?: number;
+}
+
+export interface ArchivedEmployee {
+  id: string;
+  name: string;
+  phone?: string;
+  role: string;
+  siteId?: string;
+  siteName?: string;
+  status: string;
+  archivedAt?: string;
+  archivedBy?: string;
+  archiveReason?: string;
+  historicalShiftsCount?: number;
+  historicalTotalHours?: number;
+}
+
+export interface ArchivedJobSite {
+  id: string;
+  name: string;
+  address?: string;
+  lat?: number | null;
+  lon?: number | null;
+  geofenceRadius?: number;
+  status: string;
+  archivedAt?: string;
+  archivedBy?: string;
+  archiveReason?: string;
+  historicalShiftsCount?: number;
+}
+
+export interface VoidedShift {
+  id: string;
+  shiftId: string;
+  employeeId: string;
+  employeeName: string;
+  siteId: string;
+  siteName: string;
+  startTime: string;
+  endTime?: string | null;
+  regularHours: number;
+  overtimeHours: number;
+  status: string;
+  voidReason?: string;
+  voidedAt?: string;
+  voidedBy?: string;
+}
+
+export interface VoidedOvertime {
+  id: string;
+  shiftId: string;
+  employeeId: string;
+  employeeName: string;
+  date: string;
+  overtimeHours: number;
+  status: string;
+  voidReason?: string;
+  voidedAt?: string;
+  voidedBy?: string;
+}
+
+export interface DuplicateRecord {
+  type: string;
+  recordType: string;
+  id: string;
+  name: string;
+  phone?: string;
+  status: string;
+  siteId?: string;
+  relatedCount: number;
+  relatedRecords: Array<{
+    id: string;
+    name: string;
+    phone?: string;
+    siteId?: string;
+    status: string;
+  }>;
+}
+
+export interface ArchivedRecordsData {
+  archivedEmployees: ArchivedEmployee[];
+  archivedJobSites: ArchivedJobSite[];
+  voidedShifts: VoidedShift[];
+  voidedOvertime: VoidedOvertime[];
+  duplicates: DuplicateRecord[];
+  counts: {
+    archivedEmployees: number;
+    archivedJobSites: number;
+    voidedShifts: number;
+    voidedOvertime: number;
+    duplicates: number;
+  };
 }
 
 /**
@@ -769,6 +862,160 @@ export async function getAuditLogs(token: string, limit?: number): Promise<ApiRe
     action: 'getAuditLogs',
     token,
     limit,
+  });
+}
+
+/**
+ * Admin: Archive Employee (Soft delete with history preservation)
+ */
+export async function archiveEmployee(
+  token: string,
+  employeeId: string,
+  reason?: string
+): Promise<ApiResponse> {
+  return sendGasRequest({
+    action: 'archiveEmployee',
+    token,
+    employeeId,
+    reason,
+  });
+}
+
+/**
+ * Admin: Restore Archived Employee to Active
+ */
+export async function restoreEmployee(
+  token: string,
+  employeeId: string
+): Promise<ApiResponse> {
+  return sendGasRequest({
+    action: 'restoreEmployee',
+    token,
+    employeeId,
+  });
+}
+
+/**
+ * Admin: Archive Job Site
+ */
+export async function archiveJobSite(
+  token: string,
+  siteId: string,
+  reason?: string
+): Promise<ApiResponse> {
+  return sendGasRequest({
+    action: 'archiveJobSite',
+    token,
+    siteId,
+    reason,
+  });
+}
+
+/**
+ * Admin: Restore Archived Job Site
+ */
+export async function restoreJobSite(
+  token: string,
+  siteId: string
+): Promise<ApiResponse> {
+  return sendGasRequest({
+    action: 'restoreJobSite',
+    token,
+    siteId,
+  });
+}
+
+/**
+ * Admin: Void Shift / Attendance Record with mandatory reason
+ */
+export async function voidShift(
+  token: string,
+  shiftId: string,
+  reason: string
+): Promise<ApiResponse> {
+  return sendGasRequest({
+    action: 'voidShift',
+    token,
+    shiftId,
+    reason,
+  });
+}
+
+/**
+ * Admin: Cancel or Void Overtime Request with mandatory reason
+ */
+export async function voidOvertime(
+  token: string,
+  overtimeId: string,
+  reason: string
+): Promise<ApiResponse> {
+  return sendGasRequest({
+    action: 'voidOvertime',
+    token,
+    overtimeId,
+    reason,
+  });
+}
+
+/**
+ * Admin: Purge Attendance Photo under Retention Policy
+ */
+export async function purgeAttendancePhoto(
+  token: string,
+  shiftId: string,
+  photoType: 'start' | 'end',
+  reason: string,
+  policyAck: boolean = true
+): Promise<ApiResponse> {
+  return sendGasRequest({
+    action: 'purgeAttendancePhoto',
+    token,
+    shiftId,
+    photoType,
+    reason,
+    policyAck,
+  });
+}
+
+/**
+ * Admin: Purge Photo directly from Cloudflare R2 / Dev Storage
+ */
+export async function purgePhotoFromStorage(
+  token: string,
+  photoKey: string,
+  reason: string
+): Promise<ApiResponse> {
+  try {
+    const res = await fetch('/api/photos/delete', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        photoKey,
+        reason,
+        policyAck: true,
+      }),
+    });
+    return (await res.json()) as ApiResponse;
+  } catch (err: unknown) {
+    return {
+      success: false,
+      message: 'Failed to contact photo storage service: ' + (err as Error).message,
+    };
+  }
+}
+
+/**
+ * Admin: Get Archived & Voided Records across the System
+ */
+export async function getArchivedRecords(
+  token: string
+): Promise<ApiResponse<ArchivedRecordsData>> {
+  return sendGasRequest<ArchivedRecordsData>({
+    action: 'getArchivedRecords',
+    token,
   });
 }
 

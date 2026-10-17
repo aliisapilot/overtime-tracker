@@ -125,8 +125,11 @@ var AuthService = (function() {
       }
 
       if (employee.Status !== 'Active') {
+        var statusMsg = employee.Status === 'Archived'
+          ? 'Account is archived. Please contact administrator.'
+          : 'Account is inactive. Please contact administrator.';
         this.logAuthEvent(employeeId, 'login', 'failed', 'Employee status is ' + employee.Status);
-        return { success: false, message: 'Account is inactive. Please contact administrator.' };
+        return { success: false, message: statusMsg };
       }
 
       var storedHash = employee['PIN Hash'] || employee.PINHash || '';

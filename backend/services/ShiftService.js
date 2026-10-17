@@ -108,7 +108,10 @@ var ShiftService = (function() {
       }
 
       if (employee.Status !== 'Active') {
-        return { success: false, message: 'Employee account is not active' };
+        var msg = employee.Status === 'Archived'
+          ? 'Employee account is archived. Shifts cannot be started.'
+          : 'Employee account is not active';
+        return { success: false, message: msg };
       }
 
       // Check assigned job site
@@ -128,6 +131,14 @@ var ShiftService = (function() {
           success: false, 
           code: 404,
           message: 'Assigned job site (' + siteId + ') was not found. Please contact your supervisor.' 
+        };
+      }
+
+      if (site.Status === 'Archived' || site.Status === 'Inactive') {
+        return {
+          success: false,
+          code: 400,
+          message: 'Assigned job site (' + siteId + ') is archived or inactive. Please contact your supervisor.'
         };
       }
 

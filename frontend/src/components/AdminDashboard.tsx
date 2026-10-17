@@ -7,9 +7,29 @@ import {
   createEmployee,
   updateEmployee,
   approveOvertime,
+  archiveEmployee,
+  restoreEmployee,
+  archiveJobSite,
+  restoreJobSite,
+  voidShift,
+  voidOvertime,
+  purgeAttendancePhoto,
+  purgePhotoFromStorage,
+  ArchivedEmployee,
+  ArchivedJobSite,
+  VoidedShift,
+  VoidedOvertime,
+  DuplicateRecord,
 } from '@/lib/api';
 import ChangePinModal from '@/components/ChangePinModal';
-import { useAdminDashboard, useAdminAttendance, useAdminAuditLogs, useDailyReport } from '@/lib/useDataLayer';
+import ConfirmDeleteModal, { DeleteActionType } from '@/components/ConfirmDeleteModal';
+import {
+  useAdminDashboard,
+  useAdminAttendance,
+  useAdminAuditLogs,
+  useDailyReport,
+  useArchivedRecords,
+} from '@/lib/useDataLayer';
 
 const JobSiteModal = dynamic(() => import('@/components/JobSiteModal'), { ssr: false });
 const PhotoModal = dynamic(() => import('@/components/PhotoModal'), { ssr: false });
@@ -104,15 +124,31 @@ function formatDuration(startStr?: string, endStr?: string): string {
 }
 
 export default function AdminDashboard({ session, onLogout }: AdminDashboardProps) {
-  const [activeTab, setActiveTab] = useState<'overtime' | 'attendance' | 'reports' | 'employees' | 'sites' | 'audit'>('overtime');
+  const [activeTab, setActiveTab] = useState<'overtime' | 'attendance' | 'reports' | 'employees' | 'sites' | 'audit' | 'archived'>('overtime');
   const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [isManualSyncing, setIsManualSyncing] = useState(false);
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
+
+  // Confirm delete/archive/void modal state
+  const [deleteModalState, setDeleteModalState] = useState<{
+    isOpen: boolean;
+    actionType: DeleteActionType;
+    recordId: string;
+    recordTitle: string;
+    subtitle?: string;
+    shiftPhotoType?: 'start' | 'end';
+  } | null>(null);
+  const [isSubmittingDelete, setIsSubmittingDelete] = useState(false);
+
+  // Archived Records tab filters
+  const [archivedSubTab, setArchivedSubTab] = useState<'all' | 'employees' | 'sites' | 'shifts' | 'overtime' | 'duplicates'>('all');
+  const [archivedSearchQuery, setArchivedSearchQuery] = useState('');
 
   // Photo viewer modal state
   const [previewPhoto, setPreviewPhoto] = useState<{
     key: string;
     title: string;
+    shiftId?: string;
     employeeName?: string;
     employeeId?: string;
     timestamp?: string;
@@ -133,15 +169,21 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
     activeShiftsCount,
     todayShiftsCount,
     totalEmployeesCount,
+    archivedCount: rawArchivedCount,
     isLoading: isDashboardLoading,
     isValidating: isDashboardValidating,
     hasCachedData,
     error: dashboardError,
     addEmployeeLocally,
     updateEmployeeLocally,
+    archiveEmployeeLocally,
+    restoreEmployeeLocally,
     addJobSiteLocally,
     updateJobSiteLocally,
+    archiveJobSiteLocally,
+    restoreJobSiteLocally,
     approveOvertimeLocally,
+    voidOvertimeLocally,
     syncNow,
   } = useAdminDashboard(session.token);
 
@@ -153,9 +195,21 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
     isValidating: attendanceValidating,
     error: attendanceError,
     refreshAttendance,
+    voidShiftLocally,
   } = useAdminAttendance(session.token);
 
   const attendanceList = (rawAttendance || []) as AttendanceItem[];
+
+  const {
+    archivedEmployees,
+    archivedJobSites,
+    voidedShifts,
+    voidedOvertime,
+    duplicates,
+    counts: archivedCounts,
+    isLoading: archivedLoading,
+    refreshArchivedRecords,
+  } = useArchivedRecords(session.token, activeTab === 'archived');
 
   const {
     auditLogs: rawAuditLogs,
@@ -448,6 +502,132 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
     }
   };
 
+  // Format UAE Date & Time (GST / Asia/Dubai)
+  const formatUaeDateTime = (isoString?: string): string => {
+    if (!isoString) return '—';
+    try {
+      const date = new Date(isoString);
+      if (isNaN(date.getTime())) return isoString;
+      return (
+        date.toLocaleString('en-GB', {
+          timeZone: 'Asia/Dubai',
+          day: '2-digit',
+          month: 'short',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: true,
+        }) + ' GST'
+      );
+    } catch {
+      return isoString;
+    }
+  };
+
+  // Execution handler for confirm delete / archive / void / restore modal
+  const handleExecuteConfirmAction = async (reason: string, policyAck?: boolean) => {
+    if (!deleteModalState) return;
+    setIsSubmittingDelete(true);
+    const { actionType, recordId, recordTitle, shiftPhotoType } = deleteModalState;
+    try {
+      let res: any;
+      if (actionType === 'archive_employee') {
+        res = await archiveEmployee(session.token, recordId, reason);
+        if (res.success) {
+          archiveEmployeeLocally(recordId);
+          setActionMessage({
+            type: 'success',
+            text: `Employee ${recordTitle} (${recordId}) archived successfully. Historical attendance & overtime preserved.`,
+          });
+          refreshArchivedRecords();
+        }
+      } else if (actionType === 'restore_employee') {
+        res = await restoreEmployee(session.token, recordId);
+        if (res.success) {
+          const empObj = employees.find((e) => e.id === recordId) || {
+            id: recordId,
+            name: recordTitle,
+            role: 'Labourer' as const,
+            status: 'Active',
+          };
+          restoreEmployeeLocally(empObj as EmployeeProfile);
+          setActionMessage({
+            type: 'success',
+            text: `Employee ${recordTitle} (${recordId}) restored to Active status!`,
+          });
+          refreshArchivedRecords();
+        }
+      } else if (actionType === 'archive_site') {
+        res = await archiveJobSite(session.token, recordId, reason);
+        if (res.success) {
+          archiveJobSiteLocally(recordId);
+          setActionMessage({
+            type: 'success',
+            text: `Job site ${recordTitle} (${recordId}) archived successfully.`,
+          });
+          refreshArchivedRecords();
+        }
+      } else if (actionType === 'restore_site') {
+        res = await restoreJobSite(session.token, recordId);
+        if (res.success) {
+          const siteObj = jobSites.find((s) => (s.id || s.ID) === recordId) || {
+            id: recordId,
+            name: recordTitle,
+            status: 'Active',
+          };
+          restoreJobSiteLocally(siteObj as JobSite);
+          setActionMessage({
+            type: 'success',
+            text: `Job site ${recordTitle} (${recordId}) restored to Active status!`,
+          });
+          refreshArchivedRecords();
+        }
+      } else if (actionType === 'void_shift') {
+        res = await voidShift(session.token, recordId, reason);
+        if (res.success) {
+          voidShiftLocally(recordId);
+          setActionMessage({
+            type: 'success',
+            text: `Shift ${recordId} voided successfully and excluded from active hours.`,
+          });
+          refreshArchivedRecords();
+        }
+      } else if (actionType === 'void_overtime') {
+        res = await voidOvertime(session.token, recordId, reason);
+        if (res.success) {
+          voidOvertimeLocally(recordId);
+          setActionMessage({
+            type: 'success',
+            text: `Overtime record ${recordId} cancelled successfully.`,
+          });
+          refreshArchivedRecords();
+        }
+      } else if (actionType === 'purge_photo') {
+        res = await purgeAttendancePhoto(session.token, recordId, shiftPhotoType || 'start', reason, policyAck);
+        if (res.success) {
+          if (res.photoKey) {
+            await purgePhotoFromStorage(session.token, res.photoKey, reason);
+          }
+          refreshAttendance();
+          setActionMessage({
+            type: 'success',
+            text: `Attendance photo purged permanently under retention policy. Shift record preserved.`,
+          });
+        }
+      }
+
+      if (res && !res.success) {
+        setActionMessage({ type: 'error', text: res.message || 'Operation failed.' });
+      } else {
+        setDeleteModalState(null);
+      }
+    } catch (err: unknown) {
+      setActionMessage({ type: 'error', text: (err as Error).message });
+    } finally {
+      setIsSubmittingDelete(false);
+    }
+  };
+
   return (
     <div className="flex-1 max-w-6xl w-full mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
       {/* Admin Header */}
@@ -533,11 +713,11 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
       )}
 
       {/* Overview Stat Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
         <div className="glass-card rounded-2xl p-4">
-          <span className="text-xs font-medium text-slate-400 block mb-1">Total Employees</span>
+          <span className="text-xs font-medium text-slate-400 block mb-1">Active Workforce</span>
           <span className="text-2xl font-bold text-white font-mono">
-            {hasCachedData ? employees.length : isDashboardLoading ? '…' : dashboardError ? '—' : 0}
+            {hasCachedData ? totalEmployeesCount : isDashboardLoading ? '…' : dashboardError ? '—' : 0}
           </span>
         </div>
         <div className="glass-card rounded-2xl p-4 border-emerald-500/20 bg-emerald-500/5">
@@ -566,6 +746,18 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
               : hasCachedData ? 0 : '…'}
           </span>
         </div>
+        <div
+          onClick={() => setActiveTab('archived')}
+          className="glass-card rounded-2xl p-4 border-amber-500/20 bg-amber-500/5 hover:border-amber-500/40 cursor-pointer transition-all"
+        >
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-xs font-medium text-amber-400">Archived Records</span>
+            <span className="text-[10px] text-amber-300 font-mono">Safe</span>
+          </div>
+          <span className="text-2xl font-bold text-amber-300 font-mono">
+            {(archivedCounts.archivedEmployees + archivedCounts.archivedJobSites + archivedCounts.voidedShifts + archivedCounts.voidedOvertime) || 0}
+          </span>
+        </div>
       </div>
 
       {/* Tab Navigation */}
@@ -574,8 +766,9 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
           { id: 'overtime', label: `Pending Overtime (${overtimeList.length})` },
           { id: 'attendance', label: 'Attendance & GPS Locations' },
           { id: 'reports', label: 'Daily Reports' },
-          { id: 'employees', label: `Employees (${employees.length})` },
-          { id: 'sites', label: `Job Sites (${jobSites.length})` },
+          { id: 'employees', label: `Employees (${employees.filter(e => e.status !== 'Archived').length})` },
+          { id: 'sites', label: `Job Sites (${jobSites.filter(s => (s.status || s.Status) !== 'Archived').length})` },
+          { id: 'archived', label: `Archived Records (${archivedCounts.archivedEmployees + archivedCounts.archivedJobSites})` },
           { id: 'audit', label: 'Audit Logs' },
         ].map((tab) => (
           <button
@@ -640,12 +833,29 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                               </span>
                             </td>
                             <td className="py-3">
-                              <button
-                                onClick={() => handleApproveOvertime(ot.ID)}
-                                className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold transition-all cursor-pointer"
-                              >
-                                Approve
-                              </button>
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  onClick={() => handleApproveOvertime(ot.ID)}
+                                  className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold transition-all cursor-pointer"
+                                >
+                                  Approve
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setDeleteModalState({
+                                      isOpen: true,
+                                      actionType: 'void_overtime',
+                                      recordId: ot.ID,
+                                      recordTitle: `Overtime for ${ot['Employee ID']} (${ot['Overtime Hours']} hrs)`,
+                                      subtitle: `Date: ${ot.Date}`,
+                                    })
+                                  }
+                                  className="px-2.5 py-1 bg-rose-600/10 hover:bg-rose-600 text-rose-400 hover:text-white border border-rose-500/20 rounded-lg text-xs font-semibold transition-all cursor-pointer"
+                                >
+                                  Cancel / Void
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         ))}
@@ -718,7 +928,8 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                           <th className="py-2.5 pr-3">Clock Out (Time, Selfie & GPS)</th>
                           <th className="py-2.5 pr-3">Duration</th>
                           <th className="py-2.5 pr-3">Hours (Reg / OT)</th>
-                          <th className="py-2.5">Status</th>
+                          <th className="py-2.5 pr-3">Status</th>
+                          <th className="py-2.5 text-right">Action</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800">
@@ -771,6 +982,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                                         setPreviewPhoto({
                                           key: att.startPhotoKey || '',
                                           title: 'Clock-in Selfie',
+                                          shiftId: att.ID || att.shiftId || '',
                                           employeeName: empName,
                                           employeeId: empId,
                                           timestamp: att.startPhotoCapturedAt || att['Start Time'] || att.startTime,
@@ -839,6 +1051,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                                             setPreviewPhoto({
                                               key: att.endPhotoKey || '',
                                               title: 'Clock-out Selfie',
+                                              shiftId: att.ID || att.shiftId || '',
                                               employeeName: empName,
                                               employeeId: empId,
                                               timestamp: att.endPhotoCapturedAt || att['End Time'] || att.endTime,
@@ -911,13 +1124,42 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                               <td className="py-3">
                                 <span
                                   className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                                    att.Status === 'Completed' || att.status === 'Completed'
+                                    att.Status === 'Voided' || att.status === 'Voided'
+                                      ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                                      : att.Status === 'Completed' || att.status === 'Completed'
                                       ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
                                       : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
                                   }`}
                                 >
                                   {att.Status || att.status}
                                 </span>
+                              </td>
+
+                              {/* Action */}
+                              <td className="py-3 text-right">
+                                {att.Status === 'Voided' || att.status === 'Voided' ? (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                                    Voided
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setDeleteModalState({
+                                        isOpen: true,
+                                        actionType: 'void_shift',
+                                        recordId: att.ID || att.shiftId || '',
+                                        recordTitle: `Shift: ${empName} (${att.ID || att.shiftId || 'ID'})`,
+                                        subtitle: `Site: ${siteName} | Duration: ${durationStr}`,
+                                      })
+                                    }
+                                    className="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[11px] font-medium transition-all cursor-pointer inline-flex items-center gap-1"
+                                    title="Void incorrect shift record"
+                                  >
+                                    <span>🗑️</span>
+                                    <span>Void</span>
+                                  </button>
+                                )}
                               </td>
                             </tr>
                           );
@@ -1183,13 +1425,51 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                                 </span>
                               </td>
                               <td className="py-3 text-right">
-                                <button
-                                  type="button"
-                                  onClick={() => handleOpenEditEmp(emp)}
-                                  className="px-2.5 py-1 text-xs font-medium text-blue-400 hover:text-white bg-blue-500/10 hover:bg-blue-600 rounded-lg border border-blue-500/20 transition-all cursor-pointer"
-                                >
-                                  {sId ? 'Change Site / Edit' : 'Assign Site'}
-                                </button>
+                                <div className="inline-flex items-center gap-1.5 justify-end">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenEditEmp(emp)}
+                                    className="px-2.5 py-1 text-xs font-medium text-blue-400 hover:text-white bg-blue-500/10 hover:bg-blue-600 rounded-lg border border-blue-500/20 transition-all cursor-pointer"
+                                  >
+                                    {sId ? 'Change Site / Edit' : 'Assign Site'}
+                                  </button>
+                                  {emp.id === 'EMP000' ? (
+                                    <span className="text-[10px] text-slate-500 font-mono italic px-2">Primary Admin</span>
+                                  ) : emp.status === 'Archived' ? (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setDeleteModalState({
+                                          isOpen: true,
+                                          actionType: 'restore_employee',
+                                          recordId: emp.id,
+                                          recordTitle: emp.name,
+                                          subtitle: `Role: ${emp.role} • Status: Archived`,
+                                        })
+                                      }
+                                      className="px-2.5 py-1 text-xs font-medium text-emerald-400 hover:text-white bg-emerald-500/10 hover:bg-emerald-600 rounded-lg border border-emerald-500/20 transition-all cursor-pointer"
+                                    >
+                                      Restore
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setDeleteModalState({
+                                          isOpen: true,
+                                          actionType: 'archive_employee',
+                                          recordId: emp.id,
+                                          recordTitle: emp.name,
+                                          subtitle: `Role: ${emp.role} • Site: ${emp.siteId || 'Unassigned'}`,
+                                        })
+                                      }
+                                      className="px-2.5 py-1 text-xs font-medium text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg border border-slate-700/60 hover:border-rose-500/30 transition-all cursor-pointer"
+                                      title="Archive employee (preserves historical attendance and overtime)"
+                                    >
+                                      Archive
+                                    </button>
+                                  )}
+                                </div>
                               </td>
                             </tr>
                           );
@@ -1312,16 +1592,52 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                                 </span>
                               </td>
                               <td className="py-3 text-right">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setSelectedSiteToEdit(site);
-                                    setShowSiteModal(true);
-                                  }}
-                                  className="px-2.5 py-1 text-xs font-medium text-blue-400 hover:text-white bg-blue-500/10 hover:bg-blue-600 rounded-lg border border-blue-500/20 transition-all cursor-pointer"
-                                >
-                                  Edit Site
-                                </button>
+                                <div className="inline-flex items-center gap-1.5 justify-end">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedSiteToEdit(site);
+                                      setShowSiteModal(true);
+                                    }}
+                                    className="px-2.5 py-1 text-xs font-medium text-blue-400 hover:text-white bg-blue-500/10 hover:bg-blue-600 rounded-lg border border-blue-500/20 transition-all cursor-pointer"
+                                  >
+                                    Edit Site
+                                  </button>
+                                  {(site.status || site.Status) === 'Archived' ? (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setDeleteModalState({
+                                          isOpen: true,
+                                          actionType: 'restore_site',
+                                          recordId: getSiteId(site),
+                                          recordTitle: getSiteName(site),
+                                          subtitle: `Address: ${site.address || site.Address || '—'}`,
+                                        })
+                                      }
+                                      className="px-2.5 py-1 text-xs font-medium text-emerald-400 hover:text-white bg-emerald-500/10 hover:bg-emerald-600 rounded-lg border border-emerald-500/20 transition-all cursor-pointer"
+                                    >
+                                      Restore
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setDeleteModalState({
+                                          isOpen: true,
+                                          actionType: 'archive_site',
+                                          recordId: getSiteId(site),
+                                          recordTitle: getSiteName(site),
+                                          subtitle: `${assignedWorkers.length} assigned worker(s)`,
+                                        })
+                                      }
+                                      className="px-2.5 py-1 text-xs font-medium text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg border border-slate-700/60 hover:border-rose-500/30 transition-all cursor-pointer"
+                                      title="Archive job site (prevents new shifts)"
+                                    >
+                                      Archive
+                                    </button>
+                                  )}
+                                </div>
                               </td>
                             </tr>
                           );
@@ -1381,6 +1697,445 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                     </table>
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* 6. ARCHIVED RECORDS & SAFE RESTORATION TAB */}
+            {activeTab === 'archived' && (
+              <div className="space-y-6">
+                {/* Header & Controls */}
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                  <div>
+                    <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">
+                      Archived & Voided Records
+                    </h2>
+                    <p className="text-xs text-slate-400">
+                      Audit-safe repository of archived employees, job sites, voided shifts, and cancelled overtime.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 w-full sm:w-auto">
+                    <button
+                      onClick={() => refreshArchivedRecords()}
+                      disabled={archivedLoading}
+                      className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      <span className={archivedLoading ? 'animate-spin' : ''}>↻</span>
+                      <span>Refresh</span>
+                    </button>
+                    <div className="relative flex-1 sm:w-64">
+                      <input
+                        type="text"
+                        placeholder="Search archived..."
+                        value={archivedSearchQuery}
+                        onChange={(e) => setArchivedSearchQuery(e.target.value)}
+                        className="w-full px-3 py-1.5 bg-slate-800/80 border border-slate-700/80 rounded-xl text-white text-xs placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                      {archivedSearchQuery && (
+                        <button
+                          onClick={() => setArchivedSearchQuery('')}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white text-xs cursor-pointer"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Sub-filter Navigation Pills */}
+                <div className="flex flex-wrap gap-2 border-b border-slate-800 pb-3">
+                  {[
+                    {
+                      id: 'all',
+                      label: 'All Records',
+                      count:
+                        (archivedCounts?.archivedEmployees || 0) +
+                        (archivedCounts?.archivedJobSites || 0) +
+                        (archivedCounts?.voidedShifts || 0) +
+                        (archivedCounts?.voidedOvertime || 0),
+                    },
+                    { id: 'employees', label: 'Archived Employees', count: archivedEmployees.length },
+                    { id: 'sites', label: 'Archived Sites', count: archivedJobSites.length },
+                    { id: 'shifts', label: 'Voided Shifts', count: voidedShifts.length },
+                    { id: 'overtime', label: 'Cancelled Overtime', count: voidedOvertime.length },
+                    { id: 'duplicates', label: 'Duplicate Collisions', count: duplicates.length },
+                  ].map((filter) => (
+                    <button
+                      key={filter.id}
+                      onClick={() => setArchivedSubTab(filter.id as typeof archivedSubTab)}
+                      className={`px-3 py-1 rounded-xl text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
+                        archivedSubTab === filter.id
+                          ? 'bg-blue-600 text-white shadow-sm shadow-blue-500/20'
+                          : 'bg-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-700/80'
+                      }`}
+                    >
+                      <span>{filter.label}</span>
+                      <span
+                        className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${
+                          archivedSubTab === filter.id ? 'bg-blue-500/40 text-white' : 'bg-slate-700 text-slate-300'
+                        }`}
+                      >
+                        {filter.count}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+
+                {/* Duplicate Record Resolution Alert */}
+                {(archivedSubTab === 'all' || archivedSubTab === 'duplicates') && duplicates.length > 0 && (
+                  <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 space-y-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-base">⚠️</span>
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-amber-300">
+                        Duplicate Identity Collisions Detected ({duplicates.length})
+                      </h3>
+                    </div>
+                    <p className="text-xs text-amber-200/80 leading-relaxed">
+                      Safe duplicate resolution: Never merge records automatically. Related records are shown below so you can archive duplicate profiles without deleting historical IDs or attendance logs.
+                    </p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-2">
+                      {duplicates.map((dup) => (
+                        <div key={dup.id} className="p-3 rounded-xl bg-slate-900/80 border border-amber-500/20 space-y-2">
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <div className="text-xs font-bold text-white">{dup.name}</div>
+                              <div className="text-[11px] font-mono text-amber-400">ID: {dup.id}</div>
+                              {dup.phone && <div className="text-[10px] text-slate-400">Phone: {dup.phone}</div>}
+                            </div>
+                            <button
+                              onClick={() =>
+                                setDeleteModalState({
+                                  isOpen: true,
+                                  actionType: 'archive_employee',
+                                  recordId: dup.id,
+                                  recordTitle: `${dup.name} (${dup.id})`,
+                                  subtitle: `Duplicate collision with other ${dup.recordType || 'employee'} entries`,
+                                })
+                              }
+                              className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-[10px] font-semibold cursor-pointer transition-all"
+                            >
+                              Archive Duplicate
+                            </button>
+                          </div>
+                          {dup.relatedRecords && dup.relatedRecords.length > 0 && (
+                            <div className="pt-2 border-t border-slate-800 text-[10px] text-slate-400 space-y-1">
+                              <span className="font-semibold text-slate-300">Collides with:</span>
+                              {dup.relatedRecords.map((rel) => (
+                                <div key={rel.id} className="flex justify-between font-mono text-[10px]">
+                                  <span>
+                                    {rel.name} ({rel.id})
+                                  </span>
+                                  <span className={rel.status === 'Archived' ? 'text-amber-400' : 'text-emerald-400'}>
+                                    {rel.status}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Filter logic helper */}
+                {(() => {
+                  const query = archivedSearchQuery.trim().toLowerCase();
+                  const filteredEmployees = archivedEmployees.filter(
+                    (e) =>
+                      !query ||
+                      e.name.toLowerCase().includes(query) ||
+                      e.id.toLowerCase().includes(query) ||
+                      (e.archiveReason || '').toLowerCase().includes(query)
+                  );
+                  const filteredSites = archivedJobSites.filter(
+                    (s) =>
+                      !query ||
+                      s.name.toLowerCase().includes(query) ||
+                      s.id.toLowerCase().includes(query) ||
+                      (s.archiveReason || '').toLowerCase().includes(query)
+                  );
+                  const filteredShifts = voidedShifts.filter(
+                    (s) =>
+                      !query ||
+                      s.shiftId.toLowerCase().includes(query) ||
+                      s.employeeName.toLowerCase().includes(query) ||
+                      s.siteName.toLowerCase().includes(query) ||
+                      (s.voidReason || '').toLowerCase().includes(query)
+                  );
+                  const filteredOvertime = voidedOvertime.filter(
+                    (o) =>
+                      !query ||
+                      o.id.toLowerCase().includes(query) ||
+                      o.employeeName.toLowerCase().includes(query) ||
+                      (o.voidReason || '').toLowerCase().includes(query)
+                  );
+
+                  const totalMatching =
+                    filteredEmployees.length + filteredSites.length + filteredShifts.length + filteredOvertime.length;
+
+                  if (archivedLoading) {
+                    return (
+                      <div className="py-12 flex flex-col items-center justify-center text-slate-400 space-y-3">
+                        <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                        <p className="text-xs">Loading archived records from Google Sheets...</p>
+                      </div>
+                    );
+                  }
+
+                  if (totalMatching === 0 && !archivedLoading) {
+                    return (
+                      <div className="p-8 text-center text-slate-500 space-y-2">
+                        <p className="text-sm font-medium">No archived or voided records found.</p>
+                        <p className="text-xs text-slate-600">
+                          {query ? 'No records matched your search query.' : 'All system records are currently active.'}
+                        </p>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="space-y-8">
+                      {/* Section A: Archived Employees */}
+                      {(archivedSubTab === 'all' || archivedSubTab === 'employees') && filteredEmployees.length > 0 && (
+                        <div>
+                          <div className="flex items-center gap-2 mb-3">
+                            <span className="text-sm">👷</span>
+                            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">
+                              Archived Employees ({filteredEmployees.length})
+                            </h3>
+                          </div>
+                          <div className="overflow-x-auto rounded-xl border border-slate-800">
+                            <table className="w-full text-left text-xs text-slate-300">
+                              <thead className="text-[10px] uppercase tracking-wider text-slate-400 bg-slate-900/60 border-b border-slate-800">
+                                <tr>
+                                  <th className="py-2.5 px-3">Employee</th>
+                                  <th className="py-2.5 px-3">Archived At (GST)</th>
+                                  <th className="py-2.5 px-3">Archived By</th>
+                                  <th className="py-2.5 px-3">Reason</th>
+                                  <th className="py-2.5 px-3">Historical Shifts</th>
+                                  <th className="py-2.5 px-3 text-right">Action</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-800/60">
+                                {filteredEmployees.map((emp) => (
+                                  <tr key={emp.id} className="hover:bg-slate-800/30">
+                                    <td className="py-3 px-3">
+                                      <div className="font-semibold text-white">{emp.name}</div>
+                                      <div className="text-[11px] font-mono text-blue-400">{emp.id}</div>
+                                      {emp.phone && <div className="text-[10px] text-slate-500">{emp.phone}</div>}
+                                    </td>
+                                    <td className="py-3 px-3 font-mono text-[11px] text-slate-300 whitespace-nowrap">
+                                      {formatUaeDateTime(emp.archivedAt)}
+                                    </td>
+                                    <td className="py-3 px-3 font-mono text-[11px] text-blue-300">
+                                      {emp.archivedBy || '—'}
+                                    </td>
+                                    <td className="py-3 px-3 text-slate-300 max-w-xs truncate">
+                                      {emp.archiveReason || '—'}
+                                    </td>
+                                    <td className="py-3 px-3 font-mono text-[11px] text-slate-400">
+                                      {emp.historicalShiftsCount ?? 0} shifts ({Number(emp.historicalTotalHours ?? 0).toFixed(1)}h)
+                                    </td>
+                                    <td className="py-3 px-3 text-right">
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setDeleteModalState({
+                                            isOpen: true,
+                                            actionType: 'restore_employee',
+                                            recordId: emp.id,
+                                            recordTitle: `${emp.name} (${emp.id})`,
+                                            subtitle: `Current status: Archived. Restoring will reactivate PIN and shift access.`,
+                                          })
+                                        }
+                                        className="px-2.5 py-1 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[11px] font-medium transition-all cursor-pointer inline-flex items-center gap-1"
+                                      >
+                                        <span>♻️</span>
+                                        <span>Restore</span>
+                                      </button>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Section B: Archived Job Sites */}
+                      {(archivedSubTab === 'all' || archivedSubTab === 'sites') && filteredSites.length > 0 && (
+                        <div>
+                          <div className="flex items-center gap-2 mb-3">
+                            <span className="text-sm">📍</span>
+                            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">
+                              Archived Job Sites ({filteredSites.length})
+                            </h3>
+                          </div>
+                          <div className="overflow-x-auto rounded-xl border border-slate-800">
+                            <table className="w-full text-left text-xs text-slate-300">
+                              <thead className="text-[10px] uppercase tracking-wider text-slate-400 bg-slate-900/60 border-b border-slate-800">
+                                <tr>
+                                  <th className="py-2.5 px-3">Job Site</th>
+                                  <th className="py-2.5 px-3">Archived At (GST)</th>
+                                  <th className="py-2.5 px-3">Archived By</th>
+                                  <th className="py-2.5 px-3">Reason</th>
+                                  <th className="py-2.5 px-3">Historical Shifts</th>
+                                  <th className="py-2.5 px-3 text-right">Action</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-800/60">
+                                {filteredSites.map((site) => (
+                                  <tr key={site.id} className="hover:bg-slate-800/30">
+                                    <td className="py-3 px-3">
+                                      <div className="font-semibold text-white">{site.name}</div>
+                                      <div className="text-[11px] font-mono text-emerald-400">{site.id}</div>
+                                      {site.address && <div className="text-[10px] text-slate-500">{site.address}</div>}
+                                    </td>
+                                    <td className="py-3 px-3 font-mono text-[11px] text-slate-300 whitespace-nowrap">
+                                      {formatUaeDateTime(site.archivedAt)}
+                                    </td>
+                                    <td className="py-3 px-3 font-mono text-[11px] text-blue-300">
+                                      {site.archivedBy || '—'}
+                                    </td>
+                                    <td className="py-3 px-3 text-slate-300 max-w-xs truncate">
+                                      {site.archiveReason || '—'}
+                                    </td>
+                                    <td className="py-3 px-3 font-mono text-[11px] text-slate-400">
+                                      {site.historicalShiftsCount ?? 0} shifts
+                                    </td>
+                                    <td className="py-3 px-3 text-right">
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setDeleteModalState({
+                                            isOpen: true,
+                                            actionType: 'restore_site',
+                                            recordId: site.id,
+                                            recordTitle: `${site.name} (${site.id})`,
+                                            subtitle: `Current status: Archived. Restoring will allow employee assignment and shifts.`,
+                                          })
+                                        }
+                                        className="px-2.5 py-1 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[11px] font-medium transition-all cursor-pointer inline-flex items-center gap-1"
+                                      >
+                                        <span>♻️</span>
+                                        <span>Restore</span>
+                                      </button>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Section C: Voided Shifts */}
+                      {(archivedSubTab === 'all' || archivedSubTab === 'shifts') && filteredShifts.length > 0 && (
+                        <div>
+                          <div className="flex items-center gap-2 mb-3">
+                            <span className="text-sm">⏱️</span>
+                            <h3 className="text-xs font-bold uppercase tracking-wider text-rose-300">
+                              Voided Attendance Shifts ({filteredShifts.length})
+                            </h3>
+                          </div>
+                          <div className="overflow-x-auto rounded-xl border border-slate-800">
+                            <table className="w-full text-left text-xs text-slate-300">
+                              <thead className="text-[10px] uppercase tracking-wider text-slate-400 bg-slate-900/60 border-b border-slate-800">
+                                <tr>
+                                  <th className="py-2.5 px-3">Shift ID / Employee</th>
+                                  <th className="py-2.5 px-3">Site</th>
+                                  <th className="py-2.5 px-3">Voided At (GST)</th>
+                                  <th className="py-2.5 px-3">Voided By</th>
+                                  <th className="py-2.5 px-3">Void Reason</th>
+                                  <th className="py-2.5 px-3">Original Hours</th>
+                                  <th className="py-2.5 px-3 text-right">Status</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-800/60">
+                                {filteredShifts.map((shift) => (
+                                  <tr key={shift.shiftId || shift.id} className="hover:bg-slate-800/30">
+                                    <td className="py-3 px-3">
+                                      <div className="font-semibold text-white">{shift.employeeName || shift.employeeId}</div>
+                                      <div className="text-[10px] font-mono text-slate-500">Shift #{shift.shiftId || shift.id}</div>
+                                    </td>
+                                    <td className="py-3 px-3 text-slate-300">{shift.siteName || shift.siteId}</td>
+                                    <td className="py-3 px-3 font-mono text-[11px] text-slate-300 whitespace-nowrap">
+                                      {formatUaeDateTime(shift.voidedAt)}
+                                    </td>
+                                    <td className="py-3 px-3 font-mono text-[11px] text-blue-300">{shift.voidedBy || '—'}</td>
+                                    <td className="py-3 px-3 text-rose-300 max-w-xs truncate">{shift.voidReason || '—'}</td>
+                                    <td className="py-3 px-3 font-mono text-[11px] text-slate-500 line-through">
+                                      {shift.regularHours}h reg / {shift.overtimeHours}h OT
+                                    </td>
+                                    <td className="py-3 px-3 text-right">
+                                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                                        Voided
+                                      </span>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Section D: Cancelled Overtime */}
+                      {(archivedSubTab === 'all' || archivedSubTab === 'overtime') && filteredOvertime.length > 0 && (
+                        <div>
+                          <div className="flex items-center gap-2 mb-3">
+                            <span className="text-sm">⏳</span>
+                            <h3 className="text-xs font-bold uppercase tracking-wider text-amber-300">
+                              Cancelled Overtime Records ({filteredOvertime.length})
+                            </h3>
+                          </div>
+                          <div className="overflow-x-auto rounded-xl border border-slate-800">
+                            <table className="w-full text-left text-xs text-slate-300">
+                              <thead className="text-[10px] uppercase tracking-wider text-slate-400 bg-slate-900/60 border-b border-slate-800">
+                                <tr>
+                                  <th className="py-2.5 px-3">OT ID / Employee</th>
+                                  <th className="py-2.5 px-3">Date</th>
+                                  <th className="py-2.5 px-3">Cancelled At (GST)</th>
+                                  <th className="py-2.5 px-3">Cancelled By</th>
+                                  <th className="py-2.5 px-3">Cancellation Reason</th>
+                                  <th className="py-2.5 px-3">Hours</th>
+                                  <th className="py-2.5 px-3 text-right">Status</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-800/60">
+                                {filteredOvertime.map((ot) => (
+                                  <tr key={ot.id} className="hover:bg-slate-800/30">
+                                    <td className="py-3 px-3">
+                                      <div className="font-semibold text-white">{ot.employeeName || ot.employeeId}</div>
+                                      <div className="text-[10px] font-mono text-slate-500">
+                                        OT #{ot.id} (Shift #{ot.shiftId})
+                                      </div>
+                                    </td>
+                                    <td className="py-3 px-3 font-mono text-[11px] text-slate-300">{ot.date}</td>
+                                    <td className="py-3 px-3 font-mono text-[11px] text-slate-300 whitespace-nowrap">
+                                      {formatUaeDateTime(ot.voidedAt)}
+                                    </td>
+                                    <td className="py-3 px-3 font-mono text-[11px] text-blue-300">{ot.voidedBy || '—'}</td>
+                                    <td className="py-3 px-3 text-amber-300 max-w-xs truncate">{ot.voidReason || '—'}</td>
+                                    <td className="py-3 px-3 font-mono text-[11px] text-slate-500 line-through">
+                                      {ot.overtimeHours}h
+                                    </td>
+                                    <td className="py-3 px-3 text-right">
+                                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                                        Cancelled
+                                      </span>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             )}
           </>
@@ -1677,6 +2432,30 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
           accuracy={previewPhoto.accuracy}
           status={previewPhoto.status}
           onClose={() => setPreviewPhoto(null)}
+          onPurgePhoto={() => {
+            setDeleteModalState({
+              isOpen: true,
+              actionType: 'purge_photo',
+              recordId: previewPhoto.shiftId || previewPhoto.key,
+              recordTitle: `${previewPhoto.employeeName || previewPhoto.employeeId} (${previewPhoto.title})`,
+              subtitle: `Storage Key: ${previewPhoto.key}`,
+              shiftPhotoType: previewPhoto.title.includes('Clock-out') ? 'end' : 'start',
+            });
+          }}
+        />
+      )}
+
+      {/* Unified Confirm Delete / Archive / Void / Restore Modal */}
+      {deleteModalState && (
+        <ConfirmDeleteModal
+          isOpen={deleteModalState.isOpen}
+          actionType={deleteModalState.actionType}
+          recordId={deleteModalState.recordId}
+          recordTitle={deleteModalState.recordTitle}
+          subtitle={deleteModalState.subtitle}
+          isSubmitting={isSubmittingDelete}
+          onConfirm={handleExecuteConfirmAction}
+          onClose={() => setDeleteModalState(null)}
         />
       )}
     </div>

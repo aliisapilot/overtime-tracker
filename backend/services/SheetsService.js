@@ -77,13 +77,15 @@ var SheetsService = (function() {
     // 1. Employees sheet
     var employeesSheet = this.getOrCreateSheet(_SHEETS.EMPLOYEES);
     this.ensureHeaders(employeesSheet, [
-      'ID', 'Name', 'Phone', 'Role', 'Site ID', 'PIN Hash', 'Status', 'Created At', 'Last Accessed'
+      'ID', 'Name', 'Phone', 'Role', 'Site ID', 'PIN Hash', 'Status', 'Created At', 'Last Accessed',
+      'Archived At', 'Archived By', 'Archive Reason', 'Restored At', 'Restored By'
     ]);
 
     // 2. Job Sites sheet (Headers only - NO sample production sites)
     var jobSitesSheet = this.getOrCreateSheet(_SHEETS.JOB_SITES);
     this.ensureHeaders(jobSitesSheet, [
-      'ID', 'Name', 'Address', 'Latitude', 'Longitude', 'Geofence Radius', 'Status', 'Created At'
+      'ID', 'Name', 'Address', 'Latitude', 'Longitude', 'Geofence Radius', 'Status', 'Created At',
+      'Archived At', 'Archived By', 'Archive Reason', 'Restored At', 'Restored By'
     ]);
 
     // 3. Shifts sheet (Extended with photo verification fields)
@@ -94,14 +96,16 @@ var SheetsService = (function() {
       'End Latitude', 'End Longitude', 'End Accuracy',
       'Break Minutes', 'Regular Hours', 'Overtime Hours', 'Status', 'Created At',
       'Start Photo Key', 'Start Photo Captured At', 'Start Photo Verification Status',
-      'End Photo Key', 'End Photo Captured At', 'End Photo Verification Status'
+      'End Photo Key', 'End Photo Captured At', 'End Photo Verification Status',
+      'Void Reason', 'Voided At', 'Voided By'
     ]);
 
     // 4. Overtime sheet
     var overtimeSheet = this.getOrCreateSheet(_SHEETS.OVERTIME);
     this.ensureHeaders(overtimeSheet, [
       'ID', 'Shift ID', 'Employee ID', 'Date', 'Overtime Hours',
-      'Approval Status', 'Approved By', 'Approved At', 'Created At'
+      'Approval Status', 'Approved By', 'Approved At', 'Created At',
+      'Void Reason', 'Voided At', 'Voided By'
     ]);
 
     // 5. Settings sheet
@@ -412,6 +416,11 @@ var SheetsService = (function() {
     }
 
     var sheet = this.getOrCreateSheet(sheetName);
+    // Ensure all keys in data exist as columns in the sheet
+    if (data && typeof data === 'object') {
+      this.ensureHeaders(sheet, Object.keys(data));
+      this._headerCache[sheetName] = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    }
     var headers = this._headerCache[sheetName];
     if (!headers) {
       headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
@@ -444,6 +453,13 @@ var SheetsService = (function() {
 
     var sheet = this.getOrCreateSheet(sheetName);
     if (!sheet) return false;
+
+    // Dynamically ensure columns exist for any new metadata fields being written
+    if (data && typeof data === 'object') {
+      this.ensureHeaders(sheet, Object.keys(data));
+      this._headerCache[sheetName] = null; // force reload headers
+    }
+
     var dataRange = sheet.getDataRange();
     var values = dataRange.getValues();
     if (values.length <= 1) return false;

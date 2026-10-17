@@ -121,6 +121,64 @@ var OvertimeService = (function() {
     var all = _SheetsService.getAllOvertime();
     return all.filter(function(o) { return o['Employee ID'] === employeeId; });
   };
+  /**
+   * Cancel or void overtime record with mandatory reason (Admin operation)
+   * @param {Object} params - { overtimeId, reason }
+   * @param {Object} session - Validated admin session
+   * @returns {Object}
+   */
+  OvertimeServiceClass.prototype.voidOvertime = function(params, session) {
+    try {
+      var overtimeId = (params.overtimeId || params.id || '').trim();
+      var reason = (params.reason || params.voidReason || '').trim();
+      var performedBy = (session && session.name) ? session.name : (params.performedBy || 'Ateeb');
+
+      if (!overtimeId) {
+        return { success: false, message: 'Overtime ID is required' };
+      }
+
+      if (!reason) {
+        return { success: false, message: 'A mandatory reason is required to cancel or void overtime.' };
+      }
+
+      var record = _SheetsService.findById(_SHEETS.OVERTIME, overtimeId);
+      if (!record) {
+        return { success: false, message: 'Overtime record not found: ' + overtimeId };
+      }
+
+      if (record['Approval Status'] === 'Cancelled' || record['Approval Status'] === 'Voided') {
+        return { success: false, message: 'Overtime record is already ' + record['Approval Status'].toLowerCase() };
+      }
+
+      var serverTimestamp = new Date().toISOString();
+      var updateData = {
+        'Approval Status': 'Cancelled',
+        'Void Reason': reason,
+        'Voided At': serverTimestamp,
+        'Voided By': performedBy
+      };
+
+      _SheetsService.updateRow(_SHEETS.OVERTIME, overtimeId, updateData);
+
+      var empId = record['Employee ID'];
+      var hours = record['Overtime Hours'];
+      this.logAudit(empId, 'void_overtime', 'success',
+        'Cancelled overtime record ' + overtimeId + ' (' + hours + 'h). Reason: ' + reason, performedBy);
+
+      return {
+        success: true,
+        overtimeId: overtimeId,
+        status: 'Cancelled',
+        voidReason: reason,
+        voidedAt: serverTimestamp,
+        voidedBy: performedBy,
+        message: 'Overtime record cancelled successfully'
+      };
+    } catch (err) {
+      if (typeof Logger !== 'undefined') Logger.log('Void overtime error: ' + err);
+      return { success: false, message: 'Failed to cancel overtime: ' + (err.message || err) };
+    }
+  };
 
   return new OvertimeServiceClass();
 })();

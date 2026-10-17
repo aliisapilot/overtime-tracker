@@ -166,6 +166,22 @@ function doPost(e) {
         return jsonResponse(_AdminService.generateDailyReport(params));
       case 'generateMonthlyReport':
         return jsonResponse(_AdminService.generateMonthlyReport(params));
+      case 'archiveEmployee':
+        return jsonResponse(_AdminService.archiveEmployee(params, session));
+      case 'restoreEmployee':
+        return jsonResponse(_AdminService.restoreEmployee(params, session));
+      case 'archiveJobSite':
+        return jsonResponse(_AdminService.archiveJobSite(params, session));
+      case 'restoreJobSite':
+        return jsonResponse(_AdminService.restoreJobSite(params, session));
+      case 'voidShift':
+        return jsonResponse(_AdminService.voidShift(params, session));
+      case 'voidOvertime':
+        return jsonResponse(_OvertimeService.voidOvertime(params, session));
+      case 'purgeAttendancePhoto':
+        return jsonResponse(_AdminService.purgeAttendancePhoto(params, session));
+      case 'getArchivedRecords':
+        return jsonResponse(_AdminService.getArchivedRecords(params, session));
       default:
         return jsonResponse({
           success: false,

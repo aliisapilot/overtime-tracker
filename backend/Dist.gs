@@ -2,7 +2,7 @@
  * OVERTIME TRACKER — COMPLETE GOOGLE APPS SCRIPT BACKEND
  * Bundled for single-file deployment at script.google.com
  * Owner: Ateeb
- * Generated: 2026-10-17T19:49:43.746Z
+ * Generated: 2026-10-17T20:32:46.226Z
  */
 
 
@@ -489,13 +489,15 @@ var SheetsService = (function() {
     // 1. Employees sheet
     var employeesSheet = this.getOrCreateSheet(_SHEETS.EMPLOYEES);
     this.ensureHeaders(employeesSheet, [
-      'ID', 'Name', 'Phone', 'Role', 'Site ID', 'PIN Hash', 'Status', 'Created At', 'Last Accessed'
+      'ID', 'Name', 'Phone', 'Role', 'Site ID', 'PIN Hash', 'Status', 'Created At', 'Last Accessed',
+      'Archived At', 'Archived By', 'Archive Reason', 'Restored At', 'Restored By'
     ]);
 
     // 2. Job Sites sheet (Headers only - NO sample production sites)
     var jobSitesSheet = this.getOrCreateSheet(_SHEETS.JOB_SITES);
     this.ensureHeaders(jobSitesSheet, [
-      'ID', 'Name', 'Address', 'Latitude', 'Longitude', 'Geofence Radius', 'Status', 'Created At'
+      'ID', 'Name', 'Address', 'Latitude', 'Longitude', 'Geofence Radius', 'Status', 'Created At',
+      'Archived At', 'Archived By', 'Archive Reason', 'Restored At', 'Restored By'
     ]);
 
     // 3. Shifts sheet (Extended with photo verification fields)
@@ -506,14 +508,16 @@ var SheetsService = (function() {
       'End Latitude', 'End Longitude', 'End Accuracy',
       'Break Minutes', 'Regular Hours', 'Overtime Hours', 'Status', 'Created At',
       'Start Photo Key', 'Start Photo Captured At', 'Start Photo Verification Status',
-      'End Photo Key', 'End Photo Captured At', 'End Photo Verification Status'
+      'End Photo Key', 'End Photo Captured At', 'End Photo Verification Status',
+      'Void Reason', 'Voided At', 'Voided By'
     ]);
 
     // 4. Overtime sheet
     var overtimeSheet = this.getOrCreateSheet(_SHEETS.OVERTIME);
     this.ensureHeaders(overtimeSheet, [
       'ID', 'Shift ID', 'Employee ID', 'Date', 'Overtime Hours',
-      'Approval Status', 'Approved By', 'Approved At', 'Created At'
+      'Approval Status', 'Approved By', 'Approved At', 'Created At',
+      'Void Reason', 'Voided At', 'Voided By'
     ]);
 
     // 5. Settings sheet
@@ -824,6 +828,11 @@ var SheetsService = (function() {
     }
 
     var sheet = this.getOrCreateSheet(sheetName);
+    // Ensure all keys in data exist as columns in the sheet
+    if (data && typeof data === 'object') {
+      this.ensureHeaders(sheet, Object.keys(data));
+      this._headerCache[sheetName] = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    }
     var headers = this._headerCache[sheetName];
     if (!headers) {
       headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
@@ -856,6 +865,13 @@ var SheetsService = (function() {
 
     var sheet = this.getOrCreateSheet(sheetName);
     if (!sheet) return false;
+
+    // Dynamically ensure columns exist for any new metadata fields being written
+    if (data && typeof data === 'object') {
+      this.ensureHeaders(sheet, Object.keys(data));
+      this._headerCache[sheetName] = null; // force reload headers
+    }
+
     var dataRange = sheet.getDataRange();
     var values = dataRange.getValues();
     if (values.length <= 1) return false;
@@ -1281,7 +1297,10 @@ var ShiftService = (function() {
       }
 
       if (employee.Status !== 'Active') {
-        return { success: false, message: 'Employee account is not active' };
+        var msg = employee.Status === 'Archived'
+          ? 'Employee account is archived. Shifts cannot be started.'
+          : 'Employee account is not active';
+        return { success: false, message: msg };
       }
 
       // Check assigned job site
@@ -1301,6 +1320,14 @@ var ShiftService = (function() {
           success: false, 
           code: 404,
           message: 'Assigned job site (' + siteId + ') was not found. Please contact your supervisor.' 
+        };
+      }
+
+      if (site.Status === 'Archived' || site.Status === 'Inactive') {
+        return {
+          success: false,
+          code: 400,
+          message: 'Assigned job site (' + siteId + ') is archived or inactive. Please contact your supervisor.'
         };
       }
 
@@ -1873,6 +1900,64 @@ var OvertimeService = (function() {
     var all = _SheetsService.getAllOvertime();
     return all.filter(function(o) { return o['Employee ID'] === employeeId; });
   };
+  /**
+   * Cancel or void overtime record with mandatory reason (Admin operation)
+   * @param {Object} params - { overtimeId, reason }
+   * @param {Object} session - Validated admin session
+   * @returns {Object}
+   */
+  OvertimeServiceClass.prototype.voidOvertime = function(params, session) {
+    try {
+      var overtimeId = (params.overtimeId || params.id || '').trim();
+      var reason = (params.reason || params.voidReason || '').trim();
+      var performedBy = (session && session.name) ? session.name : (params.performedBy || 'Ateeb');
+
+      if (!overtimeId) {
+        return { success: false, message: 'Overtime ID is required' };
+      }
+
+      if (!reason) {
+        return { success: false, message: 'A mandatory reason is required to cancel or void overtime.' };
+      }
+
+      var record = _SheetsService.findById(_SHEETS.OVERTIME, overtimeId);
+      if (!record) {
+        return { success: false, message: 'Overtime record not found: ' + overtimeId };
+      }
+
+      if (record['Approval Status'] === 'Cancelled' || record['Approval Status'] === 'Voided') {
+        return { success: false, message: 'Overtime record is already ' + record['Approval Status'].toLowerCase() };
+      }
+
+      var serverTimestamp = new Date().toISOString();
+      var updateData = {
+        'Approval Status': 'Cancelled',
+        'Void Reason': reason,
+        'Voided At': serverTimestamp,
+        'Voided By': performedBy
+      };
+
+      _SheetsService.updateRow(_SHEETS.OVERTIME, overtimeId, updateData);
+
+      var empId = record['Employee ID'];
+      var hours = record['Overtime Hours'];
+      this.logAudit(empId, 'void_overtime', 'success',
+        'Cancelled overtime record ' + overtimeId + ' (' + hours + 'h). Reason: ' + reason, performedBy);
+
+      return {
+        success: true,
+        overtimeId: overtimeId,
+        status: 'Cancelled',
+        voidReason: reason,
+        voidedAt: serverTimestamp,
+        voidedBy: performedBy,
+        message: 'Overtime record cancelled successfully'
+      };
+    } catch (err) {
+      if (typeof Logger !== 'undefined') Logger.log('Void overtime error: ' + err);
+      return { success: false, message: 'Failed to cancel overtime: ' + (err.message || err) };
+    }
+  };
 
   return new OvertimeServiceClass();
 })();
@@ -1901,6 +1986,14 @@ var _CryptoUtils = (typeof CryptoUtils !== 'undefined')
 var _SheetsService = (typeof SheetsService !== 'undefined')
   ? SheetsService
   : (typeof require !== 'undefined' ? require('./SheetsService') : null);
+
+var _ShiftService = (typeof ShiftService !== 'undefined')
+  ? ShiftService
+  : (typeof require !== 'undefined' ? require('./ShiftService') : null);
+
+var _OvertimeService = (typeof OvertimeService !== 'undefined')
+  ? OvertimeService
+  : (typeof require !== 'undefined' ? require('./OvertimeService') : null);
 
 var AdminService = (function() {
   function AdminServiceClass() {}
@@ -2112,6 +2205,9 @@ var AdminService = (function() {
         if (!site) {
           return { success: false, message: 'Selected job site (' + siteId + ') does not exist' };
         }
+        if (site.Status === 'Archived') {
+          return { success: false, message: 'Cannot assign employee to an archived job site (' + site.Name + ')' };
+        }
       }
 
       var customId = (params.employeeId || params.id || '').trim().toUpperCase();
@@ -2194,6 +2290,22 @@ var AdminService = (function() {
         if (!site) {
           return { success: false, message: 'Selected job site (' + siteId + ') does not exist' };
         }
+        if (site.Status === 'Archived') {
+          return { success: false, message: 'Cannot assign employee to an archived job site (' + site.Name + ')' };
+        }
+      }
+
+      // Security check: Protect the last active administrator from being deactivated or archived
+      if (employee.Role === (_CONFIG.ADMIN_ROLE || 'Admin') || currentId === 'EMP000') {
+        if (status === 'Inactive' || status === 'Archived') {
+          var allEmps = _SheetsService.getAllEmployees();
+          var remainingAdmins = allEmps.filter(function(e) {
+            return e.Role === (_CONFIG.ADMIN_ROLE || 'Admin') && e.Status === 'Active' && e.ID !== currentId;
+          });
+          if (remainingAdmins.length === 0) {
+            return { success: false, message: 'Security restriction: Cannot deactivate or archive the last active administrator (' + currentId + ').' };
+          }
+        }
       }
 
       if (newId && newId !== currentId) {
@@ -2258,6 +2370,22 @@ var AdminService = (function() {
 
       if (!employeeId) {
         return { success: false, message: 'Employee ID is required' };
+      }
+
+      // Security check: Protect default admin and last active admin
+      if (employeeId === 'EMP000') {
+        return { success: false, message: 'Security restriction: Cannot deactivate the default administrator account (EMP000).' };
+      }
+
+      var targetEmp = _SheetsService.getEmployeeById(employeeId);
+      if (targetEmp && targetEmp.Role === (_CONFIG.ADMIN_ROLE || 'Admin') && (status === 'Inactive' || status === 'Archived')) {
+        var allEmps = _SheetsService.getAllEmployees();
+        var remainingAdmins = allEmps.filter(function(e) {
+          return e.Role === (_CONFIG.ADMIN_ROLE || 'Admin') && e.Status === 'Active' && e.ID !== employeeId;
+        });
+        if (remainingAdmins.length === 0) {
+          return { success: false, message: 'Security restriction: Cannot deactivate or archive the last active administrator.' };
+        }
       }
 
       var updated = _SheetsService.updateRow(_SHEETS.EMPLOYEES, employeeId, {
@@ -2346,6 +2474,9 @@ var AdminService = (function() {
           regularHours: parseFloat(s['Regular Hours'] || 0),
           overtimeHours: parseFloat(s['Overtime Hours'] || 0),
           status: s.Status,
+          voidReason: s['Void Reason'] || '',
+          voidedAt: s['Voided At'] || '',
+          voidedBy: s['Voided By'] || '',
           startPhotoKey: s['Start Photo Key'] || '',
           startPhotoCapturedAt: s['Start Photo Captured At'] || '',
           startPhotoStatus: hasStartPhoto ? (s['Start Photo Verification Status'] || 'Verified') : 'Legacy Record',
@@ -2463,7 +2594,7 @@ var AdminService = (function() {
       var targetDateStr = params.date ? new Date(params.date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
 
       var shifts = _SheetsService.getAllShifts().filter(function(s) {
-        if (!s['Start Time']) return false;
+        if (!s['Start Time'] || s.Status === 'Voided') return false;
         return new Date(s['Start Time']).toISOString().split('T')[0] === targetDateStr;
       });
 
@@ -2531,7 +2662,7 @@ var AdminService = (function() {
       var targetMonth = params.month !== undefined ? parseInt(params.month, 10) : new Date().getMonth() + 1;
 
       var shifts = _SheetsService.getAllShifts().filter(function(s) {
-        if (!s['Start Time']) return false;
+        if (!s['Start Time'] || s.Status === 'Voided') return false;
         var d = new Date(s['Start Time']);
         return d.getFullYear() === targetYear && (d.getMonth() + 1) === targetMonth;
       });
@@ -2597,17 +2728,20 @@ var AdminService = (function() {
       var overtime = _SheetsService.getAllOvertime();
 
       var pendingOvertime = overtime.filter(function(o) {
-        return (o['Approval Status'] || o.ApprovalStatus) === 'Pending';
+        var st = (o['Approval Status'] || o.ApprovalStatus);
+        return st === 'Pending';
       });
 
       var activeShifts = shifts.filter(function(s) {
-        return s.Status === 'Active' || !s['End Time'];
+        return (s.Status === 'Active' || !s['End Time']) && s.Status !== 'Voided';
       });
 
       var todayStr = new Date().toISOString().split('T')[0];
       var todayShifts = shifts.filter(function(s) {
-        return s['Start Time'] && s['Start Time'].indexOf(todayStr) === 0;
+        return s['Start Time'] && s['Start Time'].indexOf(todayStr) === 0 && s.Status !== 'Voided';
       });
+
+      var activeEmployees = employees.filter(function(e) { return e.Status !== 'Archived'; });
 
       return {
         success: true,
@@ -2620,7 +2754,10 @@ var AdminService = (function() {
             siteId: e['Site ID'] || e.SiteID || '',
             status: e.Status || 'Active',
             createdAt: e['Created At'] || '',
-            lastAccessed: e['Last Accessed'] || ''
+            lastAccessed: e['Last Accessed'] || '',
+            archivedAt: e['Archived At'] || '',
+            archivedBy: e['Archived By'] || '',
+            archiveReason: e['Archive Reason'] || ''
           };
         }),
         jobSites: jobSites.map(function(s) {
@@ -2631,16 +2768,528 @@ var AdminService = (function() {
             lat: s.Latitude ? parseFloat(s.Latitude) : null,
             lon: s.Longitude ? parseFloat(s.Longitude) : null,
             geofenceRadius: s['Geofence Radius'] ? parseFloat(s['Geofence Radius']) : (_CONFIG.DEFAULT_GEOFENCE_RADIUS || 100),
-            status: s.Status || 'Active'
+            status: s.Status || 'Active',
+            archivedAt: s['Archived At'] || '',
+            archivedBy: s['Archived By'] || '',
+            archiveReason: s['Archive Reason'] || ''
           };
         }),
         pendingOvertime: pendingOvertime,
         activeShiftsCount: activeShifts.length,
         todayShiftsCount: todayShifts.length,
-        totalEmployeesCount: employees.length
+        totalEmployeesCount: activeEmployees.length,
+        archivedCount: (employees.length - activeEmployees.length) + jobSites.filter(function(s) { return s.Status === 'Archived'; }).length
       };
     } catch (error) {
       return { success: false, message: 'Failed to load admin dashboard data: ' + (error.message || error) };
+    }
+  };
+
+  /**
+   * Archive employee (soft delete with historical data preservation)
+   */
+  AdminServiceClass.prototype.archiveEmployee = function(params, session) {
+    try {
+      var employeeId = (params.employeeId || params.id || '').trim().toUpperCase();
+      var reason = (params.reason || params.archiveReason || '').trim();
+
+      if (!employeeId) {
+        return { success: false, message: 'Employee ID is required' };
+      }
+
+      var employee = _SheetsService.getEmployeeById(employeeId);
+      if (!employee) {
+        return { success: false, message: 'Employee not found: ' + employeeId };
+      }
+
+      if (employee.Status === 'Archived') {
+        return { success: false, message: 'Employee ' + employeeId + ' is already archived.' };
+      }
+
+      // Security check: Prevent archiving the last active administrator
+      if (employee.Role === (_CONFIG.ADMIN_ROLE || 'Admin') || employeeId === 'EMP000') {
+        var allEmps = _SheetsService.getAllEmployees();
+        var remainingAdmins = allEmps.filter(function(e) {
+          return e.Role === (_CONFIG.ADMIN_ROLE || 'Admin') && e.Status === 'Active' && e.ID !== employeeId;
+        });
+        if (remainingAdmins.length === 0) {
+          return { success: false, message: 'Security restriction: Cannot archive the last active administrator (' + employeeId + ').' };
+        }
+      }
+
+      // Security check: Block archiving if employee has an active clocked-in shift
+      var activeShift = _ShiftService ? _ShiftService.getActiveShift(employeeId) : null;
+      if (activeShift) {
+        return { 
+          success: false, 
+          message: 'Cannot archive employee ' + employeeId + ' while an active shift (' + activeShift.ID + ') is clocked in. End or void the shift first.' 
+        };
+      }
+
+      var timestamp = new Date().toISOString();
+      var adminName = session ? session.name : 'Ateeb (Admin)';
+
+      var updated = _SheetsService.updateRow(_SHEETS.EMPLOYEES, employeeId, {
+        Status: 'Archived',
+        'Archived At': timestamp,
+        'Archived By': adminName,
+        'Archive Reason': reason || 'Archived by administrator'
+      });
+
+      if (!updated) {
+        return { success: false, message: 'Failed to archive employee in database' };
+      }
+
+      this.logAudit(employeeId, 'archive_employee', 'success', 'Archived employee ' + employeeId + ' (' + employee.Name + '). Reason: ' + (reason || 'None specified'), adminName);
+
+      return {
+        success: true,
+        employeeId: employeeId,
+        status: 'Archived',
+        archivedAt: timestamp,
+        archivedBy: adminName,
+        message: 'Employee ' + employee.Name + ' (' + employeeId + ') archived successfully'
+      };
+    } catch (error) {
+      return { success: false, message: 'Failed to archive employee: ' + (error.message || error) };
+    }
+  };
+
+  /**
+   * Restore archived employee to Active status
+   */
+  AdminServiceClass.prototype.restoreEmployee = function(params, session) {
+    try {
+      var employeeId = (params.employeeId || params.id || '').trim().toUpperCase();
+
+      if (!employeeId) {
+        return { success: false, message: 'Employee ID is required' };
+      }
+
+      var employee = _SheetsService.getEmployeeById(employeeId);
+      if (!employee) {
+        return { success: false, message: 'Employee not found: ' + employeeId };
+      }
+
+      if (employee.Status !== 'Archived') {
+        return { success: false, message: 'Employee ' + employeeId + ' is not archived (current status: ' + employee.Status + ').' };
+      }
+
+      var timestamp = new Date().toISOString();
+      var adminName = session ? session.name : 'Ateeb (Admin)';
+
+      var updated = _SheetsService.updateRow(_SHEETS.EMPLOYEES, employeeId, {
+        Status: 'Active',
+        'Restored At': timestamp,
+        'Restored By': adminName
+      });
+
+      if (!updated) {
+        return { success: false, message: 'Failed to restore employee in database' };
+      }
+
+      this.logAudit(employeeId, 'restore_employee', 'success', 'Restored employee ' + employeeId + ' (' + employee.Name + ') to Active status', adminName);
+
+      return {
+        success: true,
+        employeeId: employeeId,
+        status: 'Active',
+        restoredAt: timestamp,
+        restoredBy: adminName,
+        message: 'Employee ' + employee.Name + ' (' + employeeId + ') restored to Active status'
+      };
+    } catch (error) {
+      return { success: false, message: 'Failed to restore employee: ' + (error.message || error) };
+    }
+  };
+
+  /**
+   * Archive job site (soft delete, prevents new assignments and active shifts)
+   */
+  AdminServiceClass.prototype.archiveJobSite = function(params, session) {
+    try {
+      var siteId = (params.siteId || params.id || '').trim();
+      var reason = (params.reason || params.archiveReason || '').trim();
+
+      if (!siteId) {
+        return { success: false, message: 'Job site ID is required' };
+      }
+
+      var site = _SheetsService.getJobSiteById(siteId);
+      if (!site) {
+        return { success: false, message: 'Job site not found: ' + siteId };
+      }
+
+      if (site.Status === 'Archived') {
+        return { success: false, message: 'Job site ' + siteId + ' is already archived.' };
+      }
+
+      // Check active shifts currently on this site
+      var allShifts = _SheetsService.getAllShifts();
+      var activeOnSite = allShifts.filter(function(s) {
+        return String(s['Site ID']) === siteId && (s.Status === 'Active' || !s['End Time']);
+      });
+
+      if (activeOnSite.length > 0) {
+        return {
+          success: false,
+          message: 'Cannot archive site ' + site.Name + ' (' + siteId + '): there are ' + activeOnSite.length + ' active shift(s) currently clocked in. End all shifts first.'
+        };
+      }
+
+      var timestamp = new Date().toISOString();
+      var adminName = session ? session.name : 'Ateeb (Admin)';
+
+      var updated = _SheetsService.updateRow(_SHEETS.JOB_SITES, siteId, {
+        Status: 'Archived',
+        'Archived At': timestamp,
+        'Archived By': adminName,
+        'Archive Reason': reason || 'Archived by administrator'
+      });
+
+      if (!updated) {
+        return { success: false, message: 'Failed to archive job site in database' };
+      }
+
+      this.logAudit('SYSTEM', 'archive_job_site', 'success', 'Archived job site ' + siteId + ' (' + site.Name + '). Reason: ' + (reason || 'None specified'), adminName);
+
+      return {
+        success: true,
+        siteId: siteId,
+        status: 'Archived',
+        archivedAt: timestamp,
+        archivedBy: adminName,
+        message: 'Job site ' + site.Name + ' (' + siteId + ') archived successfully'
+      };
+    } catch (error) {
+      return { success: false, message: 'Failed to archive job site: ' + (error.message || error) };
+    }
+  };
+
+  /**
+   * Restore archived job site to Active status
+   */
+  AdminServiceClass.prototype.restoreJobSite = function(params, session) {
+    try {
+      var siteId = (params.siteId || params.id || '').trim();
+
+      if (!siteId) {
+        return { success: false, message: 'Job site ID is required' };
+      }
+
+      var site = _SheetsService.getJobSiteById(siteId);
+      if (!site) {
+        return { success: false, message: 'Job site not found: ' + siteId };
+      }
+
+      if (site.Status !== 'Archived') {
+        return { success: false, message: 'Job site ' + siteId + ' is not archived (current status: ' + site.Status + ').' };
+      }
+
+      var timestamp = new Date().toISOString();
+      var adminName = session ? session.name : 'Ateeb (Admin)';
+
+      var updated = _SheetsService.updateRow(_SHEETS.JOB_SITES, siteId, {
+        Status: 'Active',
+        'Restored At': timestamp,
+        'Restored By': adminName
+      });
+
+      if (!updated) {
+        return { success: false, message: 'Failed to restore job site in database' };
+      }
+
+      this.logAudit('SYSTEM', 'restore_job_site', 'success', 'Restored job site ' + siteId + ' (' + site.Name + ') to Active status', adminName);
+
+      return {
+        success: true,
+        siteId: siteId,
+        status: 'Active',
+        restoredAt: timestamp,
+        restoredBy: adminName,
+        message: 'Job site ' + site.Name + ' (' + siteId + ') restored to Active status'
+      };
+    } catch (error) {
+      return { success: false, message: 'Failed to restore job site: ' + (error.message || error) };
+    }
+  };
+
+  /**
+   * Void shift / attendance record with mandatory reason
+   */
+  AdminServiceClass.prototype.voidShift = function(params, session) {
+    try {
+      var shiftId = (params.shiftId || params.id || '').trim();
+      var reason = (params.reason || params.voidReason || '').trim();
+
+      if (!shiftId) {
+        return { success: false, message: 'Shift ID is required' };
+      }
+
+      if (!reason) {
+        return { success: false, message: 'A mandatory reason is required to void attendance records.' };
+      }
+
+      var shift = _SheetsService.findById(_SHEETS.SHIFTS, shiftId);
+      if (!shift) {
+        return { success: false, message: 'Shift not found: ' + shiftId };
+      }
+
+      if (shift.Status === 'Voided') {
+        return { success: false, message: 'Shift ' + shiftId + ' is already voided.' };
+      }
+
+      var timestamp = new Date().toISOString();
+      var adminName = session ? session.name : 'Ateeb (Admin)';
+
+      var updated = _SheetsService.updateRow(_SHEETS.SHIFTS, shiftId, {
+        Status: 'Voided',
+        'Void Reason': reason,
+        'Voided At': timestamp,
+        'Voided By': adminName
+      });
+
+      if (!updated) {
+        return { success: false, message: 'Failed to void shift in database' };
+      }
+
+      // Automatically cancel any associated pending or generated overtime records for this shift
+      var allOt = _SheetsService.getAllOvertime();
+      var linkedOt = allOt.filter(function(o) { return String(o['Shift ID']) === shiftId; });
+      linkedOt.forEach(function(o) {
+        _SheetsService.updateRow(_SHEETS.OVERTIME, o.ID, {
+          'Approval Status': 'Cancelled',
+          'Void Reason': 'Associated shift ' + shiftId + ' voided: ' + reason,
+          'Voided At': timestamp,
+          'Voided By': adminName
+        });
+      });
+
+      var details = 'Voided shift ' + shiftId + ' (Employee: ' + shift['Employee ID'] + ', Reg: ' + (shift['Regular Hours'] || 0) + 'h, OT: ' + (shift['Overtime Hours'] || 0) + 'h). Reason: ' + reason;
+      this.logAudit(shift['Employee ID'], 'void_shift', 'success', details, adminName);
+
+      return {
+        success: true,
+        shiftId: shiftId,
+        status: 'Voided',
+        voidReason: reason,
+        voidedAt: timestamp,
+        voidedBy: adminName,
+        message: 'Shift ' + shiftId + ' voided successfully'
+      };
+    } catch (error) {
+      return { success: false, message: 'Failed to void shift: ' + (error.message || error) };
+    }
+  };
+
+  /**
+   * Purge uploaded attendance photo under strict retention/privacy policy
+   */
+  AdminServiceClass.prototype.purgeAttendancePhoto = function(params, session) {
+    try {
+      var shiftId = (params.shiftId || '').trim();
+      var photoType = (params.photoType === 'end') ? 'end' : 'start';
+      var reason = (params.reason || '').trim();
+      var policyAck = Boolean(params.policyAck);
+
+      if (!shiftId) {
+        return { success: false, message: 'Shift ID is required' };
+      }
+
+      if (!reason || !policyAck) {
+        return {
+          success: false,
+          message: 'Mandatory reason and retention policy acknowledgement are required to purge attendance photos.'
+        };
+      }
+
+      var shift = _SheetsService.findById(_SHEETS.SHIFTS, shiftId);
+      if (!shift) {
+        return { success: false, message: 'Shift not found: ' + shiftId };
+      }
+
+      var timestamp = new Date().toISOString();
+      var adminName = session ? session.name : 'Ateeb (Admin)';
+      var keyField = photoType === 'end' ? 'End Photo Key' : 'Start Photo Key';
+      var statusField = photoType === 'end' ? 'End Photo Verification Status' : 'Start Photo Verification Status';
+      var oldKey = shift[keyField] || '';
+
+      if (!oldKey) {
+        return { success: false, message: 'No ' + photoType + ' photo found for shift ' + shiftId };
+      }
+
+      var updateData = {};
+      updateData[keyField] = '';
+      updateData[statusField] = 'Purged (' + timestamp.split('T')[0] + ' by ' + adminName + ': ' + reason + ')';
+
+      _SheetsService.updateRow(_SHEETS.SHIFTS, shiftId, updateData);
+
+      this.logAudit(shift['Employee ID'], 'purge_photo', 'success',
+        'Purged ' + photoType + ' photo for shift ' + shiftId + ' under retention policy. Reason: ' + reason, adminName);
+
+      return {
+        success: true,
+        shiftId: shiftId,
+        photoKey: oldKey,
+        photoType: photoType,
+        message: 'Attendance photo purged successfully under retention policy'
+      };
+    } catch (error) {
+      return { success: false, message: 'Failed to purge attendance photo: ' + (error.message || error) };
+    }
+  };
+
+  /**
+   * Get all archived and voided records across the application with duplicate detection
+   */
+  AdminServiceClass.prototype.getArchivedRecords = function(params, session) {
+    try {
+      var allEmployees = _SheetsService.getAllEmployees();
+      var allSites = _SheetsService.getAllJobSites();
+      var allShifts = _SheetsService.getAllShifts();
+      var allOvertime = _SheetsService.getAllOvertime();
+
+      var empMap = {};
+      allEmployees.forEach(function(e) { empMap[e.ID] = e.Name; });
+      var siteMap = {};
+      allSites.forEach(function(s) { siteMap[s.ID] = s.Name; });
+
+      var archivedEmployees = allEmployees
+        .filter(function(e) { return e.Status === 'Archived'; })
+        .map(function(e) {
+          var empShifts = allShifts.filter(function(s) { return s['Employee ID'] === e.ID && s.Status !== 'Voided'; });
+          var totalHours = empShifts.reduce(function(sum, s) {
+            return sum + parseFloat(s['Regular Hours'] || 0) + parseFloat(s['Overtime Hours'] || 0);
+          }, 0);
+          return {
+            id: e.ID,
+            name: e.Name,
+            phone: e.Phone || '',
+            role: e.Role || 'Labourer',
+            siteId: e['Site ID'] || '',
+            siteName: siteMap[e['Site ID']] || e['Site ID'] || 'Unassigned',
+            status: e.Status,
+            archivedAt: e['Archived At'] || '',
+            archivedBy: e['Archived By'] || '',
+            archiveReason: e['Archive Reason'] || '',
+            historicalShiftsCount: empShifts.length,
+            historicalTotalHours: Math.round(totalHours * 100) / 100
+          };
+        });
+
+      var archivedJobSites = allSites
+        .filter(function(s) { return s.Status === 'Archived'; })
+        .map(function(s) {
+          var siteShifts = allShifts.filter(function(shift) { return String(shift['Site ID']) === s.ID && shift.Status !== 'Voided'; });
+          return {
+            id: s.ID,
+            name: s.Name,
+            address: s.Address || '',
+            lat: parseFloat(s.Latitude),
+            lon: parseFloat(s.Longitude),
+            geofenceRadius: parseFloat(s['Geofence Radius'] || 100),
+            status: s.Status,
+            archivedAt: s['Archived At'] || '',
+            archivedBy: s['Archived By'] || '',
+            archiveReason: s['Archive Reason'] || '',
+            historicalShiftsCount: siteShifts.length
+          };
+        });
+
+      var voidedShifts = allShifts
+        .filter(function(s) { return s.Status === 'Voided'; })
+        .map(function(s) {
+          return {
+            id: s.ID,
+            shiftId: s.ID,
+            employeeId: s['Employee ID'],
+            employeeName: empMap[s['Employee ID']] || s['Employee ID'],
+            siteId: s['Site ID'],
+            siteName: siteMap[s['Site ID']] || s['Site ID'],
+            startTime: s['Start Time'],
+            endTime: s['End Time'] || null,
+            regularHours: parseFloat(s['Regular Hours'] || 0),
+            overtimeHours: parseFloat(s['Overtime Hours'] || 0),
+            status: s.Status,
+            voidReason: s['Void Reason'] || '',
+            voidedAt: s['Voided At'] || '',
+            voidedBy: s['Voided By'] || ''
+          };
+        });
+
+      var voidedOvertime = allOvertime
+        .filter(function(o) {
+          var st = (o['Approval Status'] || o.ApprovalStatus);
+          return st === 'Cancelled' || st === 'Voided';
+        })
+        .map(function(o) {
+          return {
+            id: o.ID,
+            shiftId: o['Shift ID'],
+            employeeId: o['Employee ID'],
+            employeeName: empMap[o['Employee ID']] || o['Employee ID'],
+            date: o.Date,
+            overtimeHours: parseFloat(o['Overtime Hours'] || 0),
+            status: o['Approval Status'] || o.ApprovalStatus,
+            voidReason: o['Void Reason'] || '',
+            voidedAt: o['Voided At'] || '',
+            voidedBy: o['Voided By'] || ''
+          };
+        });
+
+      // Duplicate detection across active workforce for safe administrative resolution
+      var duplicates = [];
+      var activeEmps = allEmployees.filter(function(e) { return e.Status !== 'Archived'; });
+      var nameCount = {};
+      activeEmps.forEach(function(e) {
+        var cleanName = (e.Name || '').trim().toLowerCase();
+        if (cleanName) {
+          nameCount[cleanName] = (nameCount[cleanName] || []).concat(e);
+        }
+      });
+
+      var seenDupIds = {};
+      Object.keys(nameCount).forEach(function(nameKey) {
+        var list = nameCount[nameKey];
+        if (list.length > 1) {
+          list.forEach(function(emp) {
+            if (!seenDupIds[emp.ID]) {
+              seenDupIds[emp.ID] = true;
+              duplicates.push({
+                type: 'Employee Name Collision',
+                recordType: 'Employee',
+                id: emp.ID,
+                name: emp.Name,
+                phone: emp.Phone,
+                status: emp.Status,
+                siteId: emp['Site ID'],
+                relatedCount: list.length,
+                relatedRecords: list.map(function(r) {
+                  return { id: r.ID, name: r.Name, phone: r.Phone, siteId: r['Site ID'], status: r.Status };
+                })
+              });
+            }
+          });
+        }
+      });
+
+      return {
+        success: true,
+        archivedEmployees: archivedEmployees,
+        archivedJobSites: archivedJobSites,
+        voidedShifts: voidedShifts,
+        voidedOvertime: voidedOvertime,
+        duplicates: duplicates,
+        counts: {
+          archivedEmployees: archivedEmployees.length,
+          archivedJobSites: archivedJobSites.length,
+          voidedShifts: voidedShifts.length,
+          voidedOvertime: voidedOvertime.length,
+          duplicates: duplicates.length
+        }
+      };
+    } catch (error) {
+      return { success: false, message: 'Failed to retrieve archived records: ' + (error.message || error) };
     }
   };
 
@@ -2779,8 +3428,11 @@ var AuthService = (function() {
       }
 
       if (employee.Status !== 'Active') {
+        var statusMsg = employee.Status === 'Archived'
+          ? 'Account is archived. Please contact administrator.'
+          : 'Account is inactive. Please contact administrator.';
         this.logAuthEvent(employeeId, 'login', 'failed', 'Employee status is ' + employee.Status);
-        return { success: false, message: 'Account is inactive. Please contact administrator.' };
+        return { success: false, message: statusMsg };
       }
 
       var storedHash = employee['PIN Hash'] || employee.PINHash || '';
@@ -3207,6 +3859,22 @@ function doPost(e) {
         return jsonResponse(_AdminService.generateDailyReport(params));
       case 'generateMonthlyReport':
         return jsonResponse(_AdminService.generateMonthlyReport(params));
+      case 'archiveEmployee':
+        return jsonResponse(_AdminService.archiveEmployee(params, session));
+      case 'restoreEmployee':
+        return jsonResponse(_AdminService.restoreEmployee(params, session));
+      case 'archiveJobSite':
+        return jsonResponse(_AdminService.archiveJobSite(params, session));
+      case 'restoreJobSite':
+        return jsonResponse(_AdminService.restoreJobSite(params, session));
+      case 'voidShift':
+        return jsonResponse(_AdminService.voidShift(params, session));
+      case 'voidOvertime':
+        return jsonResponse(_OvertimeService.voidOvertime(params, session));
+      case 'purgeAttendancePhoto':
+        return jsonResponse(_AdminService.purgeAttendancePhoto(params, session));
+      case 'getArchivedRecords':
+        return jsonResponse(_AdminService.getArchivedRecords(params, session));
       default:
         return jsonResponse({
           success: false,

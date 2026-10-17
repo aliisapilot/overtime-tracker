@@ -333,7 +333,80 @@ export default {
       }
     }
 
-    // 3. SECURE GAS BACKEND EDGE PROXY
+    // 3. SECURE ATTENDANCE PHOTO DELETION ENDPOINT (ADMIN-ONLY UNDER RETENTION POLICY)
+    if (pathname === '/api/photos/delete' && request.method === 'POST') {
+      try {
+        const authHeader = request.headers.get('Authorization') || '';
+        const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+        const session = await parseAndValidateSession(token, authSecret);
+
+        if (!session) {
+          return jsonResponse({
+            success: false,
+            code: 401,
+            message: 'Unauthorized: Session token is required to purge attendance photos.'
+          }, 401, request);
+        }
+
+        if (session.role !== 'Admin') {
+          return jsonResponse({
+            success: false,
+            code: 403,
+            message: 'Forbidden: Administrator privileges required to purge photos.'
+          }, 403, request);
+        }
+
+        let body;
+        try {
+          body = await request.json();
+        } catch {
+          return jsonResponse({ success: false, message: 'Invalid JSON payload' }, 400, request);
+        }
+
+        const { photoKey, reason, policyAck } = body || {};
+
+        if (!photoKey) {
+          return jsonResponse({ success: false, message: 'Photo key is required.' }, 400, request);
+        }
+
+        if (!reason || !policyAck) {
+          return jsonResponse({
+            success: false,
+            message: 'A mandatory reason and policy acknowledgement are required to purge attendance photos.'
+          }, 400, request);
+        }
+
+        // Strict path format validation
+        if (!PHOTO_KEY_PATTERN.test(photoKey)) {
+          return jsonResponse({
+            success: false,
+            code: 400,
+            message: 'Invalid photo key format. Path traversal rejected.'
+          }, 400, request);
+        }
+
+        if (env && env.PHOTOS_BUCKET) {
+          await env.PHOTOS_BUCKET.delete(photoKey);
+        } else {
+          devPhotoStore.delete(photoKey);
+        }
+
+        return jsonResponse({
+          success: true,
+          photoKey,
+          purgedAt: new Date().toISOString(),
+          purgedBy: session.name || session.employeeId,
+          message: 'Attendance photo permanently purged from storage under retention policy.'
+        }, 200, request);
+      } catch (delErr) {
+        return jsonResponse({
+          success: false,
+          message: 'Failed to purge photo: ' + (delErr.message || String(delErr))
+        }, 500, request);
+      }
+    }
+
+    // 4. SECURE GAS BACKEND EDGE PROXY
     // Proxies frontend requests to Google Apps Script over Cloudflare global backbone with connection reuse
     if (pathname === '/api/gas' && request.method === 'POST') {
       try {
