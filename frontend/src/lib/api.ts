@@ -519,6 +519,32 @@ export async function getDashboardData(token: string, employeeId?: string): Prom
     token,
     employeeId,
   });
+
+  // Backward-compatibility fallback if deployed GAS has not yet registered getDashboardData
+  if (!res.success && typeof res.message === 'string' && res.message.includes('getDashboardData')) {
+    try {
+      const [empRes, shiftsRes] = await Promise.all([
+        getEmployeeData(token, employeeId),
+        getEmployeeShifts(token, employeeId || ''),
+      ]);
+
+      const employee = empRes.success ? (empRes.data?.employee || (empRes as any).employee) : undefined;
+      const jobSite = empRes.success ? (empRes.data?.jobSite || (empRes as any).jobSite) : undefined;
+      const shifts = shiftsRes.success ? (shiftsRes.data?.shifts || (shiftsRes as any).shifts || []) : [];
+      const activeShift = shifts.find((s: ShiftRecord) => s.Status === 'Active') || null;
+
+      return {
+        success: true,
+        employee,
+        jobSite,
+        shifts,
+        activeShift,
+      };
+    } catch {
+      return res as unknown as DashboardResponse;
+    }
+  }
+
   return res as unknown as DashboardResponse;
 }
 
@@ -649,10 +675,48 @@ export interface AdminDashboardData {
  * Significantly reduces cold-start delays and prevents parallel GAS request throttling.
  */
 export async function getAdminDashboardData(token: string): Promise<ApiResponse<AdminDashboardData>> {
-  return sendGasRequest<AdminDashboardData>({
+  const res = await sendGasRequest<AdminDashboardData>({
     action: 'getAdminDashboardData',
     token,
   });
+
+  // If deployed GAS backend reports unsupported action for getAdminDashboardData,
+  // gracefully fall back to individual endpoints so the dashboard renders immediately
+  if (!res.success && typeof res.message === 'string' && res.message.includes('getAdminDashboardData')) {
+    try {
+      const [empRes, sitesRes, otRes, attRes] = await Promise.all([
+        getEmployees(token),
+        getJobSites(token),
+        getPendingOvertime(token),
+        getAttendance(token),
+      ]);
+
+      const employees = (empRes.data?.employees || (empRes as any).employees || []) as EmployeeProfile[];
+      const jobSites = (sitesRes.data?.sites || (sitesRes as any).sites || (sitesRes.data as any)?.jobSites || (sitesRes as any).jobSites || []) as JobSite[];
+      const pendingOvertime = (otRes.data?.overtime || (otRes as any).overtime || (otRes as any).pendingOvertime || []) as any[];
+      const attendance = (attRes.data?.attendance || (attRes as any).attendance || []) as any[];
+
+      const activeShiftsCount = Array.isArray(attendance)
+        ? attendance.filter((a: any) => a.Status === 'Active' || a.status === 'Active').length
+        : 0;
+
+      return {
+        success: true,
+        data: {
+          employees,
+          jobSites,
+          pendingOvertime,
+          activeShiftsCount,
+          todayShiftsCount: Array.isArray(attendance) ? attendance.length : 0,
+          totalEmployeesCount: employees.length,
+        },
+      };
+    } catch {
+      return res;
+    }
+  }
+
+  return res;
 }
 
 /**
