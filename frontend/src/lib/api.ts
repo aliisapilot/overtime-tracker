@@ -14,6 +14,8 @@ export interface EmployeeProfile {
   siteLon?: number | null;
   geofenceRadius?: number;
   status: string;
+  displayId?: string;
+  createdAt?: string;
 }
 
 export interface UserSession {
@@ -45,6 +47,8 @@ export interface JobSite {
   'Geofence Radius'?: number;
   status?: string;
   Status?: string;
+  displayId?: string;
+  DisplayID?: string;
   createdAt?: string;
 }
 
@@ -228,6 +232,13 @@ export async function sendGasRequest<T = Record<string, unknown>>(
       success: json.success,
       code: json.code,
     }, latencyMs);
+
+    // Detect outdated backend deployment if an action is not supported by GAS Web App
+    if (!json.success && json.message && json.message.toLowerCase().includes('unknown or unsupported action')) {
+      const unsupportedAction = json.message.split(':').slice(1).join(':').trim() || action;
+      (json as Record<string, unknown>).isBackendOutdated = true;
+      json.message = `Backend Update Required: Your Google Apps Script deployment does not support action "${unsupportedAction}". Please update your Google Apps Script project at script.google.com with the latest backend bundle (backend/Dist.gs).`;
+    }
 
     // If server reports unauthorized or expired token, clear stale session and broadcast event
     if (json.code === 401 || (json.message && json.message.toLowerCase().includes('expired session'))) {

@@ -78,14 +78,14 @@ var SheetsService = (function() {
     var employeesSheet = this.getOrCreateSheet(_SHEETS.EMPLOYEES);
     this.ensureHeaders(employeesSheet, [
       'ID', 'Name', 'Phone', 'Role', 'Site ID', 'PIN Hash', 'Status', 'Created At', 'Last Accessed',
-      'Archived At', 'Archived By', 'Archive Reason', 'Restored At', 'Restored By'
+      'Archived At', 'Archived By', 'Archive Reason', 'Restored At', 'Restored By', 'Display ID'
     ]);
 
     // 2. Job Sites sheet (Headers only - NO sample production sites)
     var jobSitesSheet = this.getOrCreateSheet(_SHEETS.JOB_SITES);
     this.ensureHeaders(jobSitesSheet, [
       'ID', 'Name', 'Address', 'Latitude', 'Longitude', 'Geofence Radius', 'Status', 'Created At',
-      'Archived At', 'Archived By', 'Archive Reason', 'Restored At', 'Restored By'
+      'Archived At', 'Archived By', 'Archive Reason', 'Restored At', 'Restored By', 'Display ID'
     ]);
 
     // 3. Shifts sheet (Extended with photo verification fields)
@@ -588,7 +588,93 @@ var SheetsService = (function() {
   };
 
   SheetsServiceClass.prototype.generateSiteId = function() {
-    return this.generateId('SITE');
+    var sites = this.getAllJobSites();
+    var maxNum = 0;
+    sites.forEach(function(s) {
+      var match = String(s.ID || s.id || '').match(/^SITE(\d+)$/i);
+      if (match) {
+        var num = parseInt(match[1], 10);
+        if (num > maxNum) maxNum = num;
+      }
+    });
+    var nextNum = maxNum + 1;
+    var padded = nextNum < 1000 ? ('000' + nextNum).slice(-3) : String(nextNum);
+    return 'SITE' + padded;
+  };
+
+  /**
+   * Deterministic, collision-free Display ID computation (EMP001, SITE001)
+   * Stable across refreshes, devices, and deployments. Does not depend on row position.
+   */
+  SheetsServiceClass.prototype.computeDeterministicDisplayId = function(item, allItems, prefix) {
+    if (!item) return '';
+    var rawId = String(item.ID || item.id || '').trim().toUpperCase();
+    if (!rawId) return '';
+    if (prefix === 'EMP' && rawId === 'EMP000') return 'EMP000';
+
+    var regex = new RegExp('^' + prefix + '(\\d+)$', 'i');
+    var directMatch = rawId.match(regex);
+    if (directMatch) {
+      var numVal = parseInt(directMatch[1], 10);
+      var padVal = numVal < 1000 ? ('000' + numVal).slice(-3) : String(numVal);
+      return prefix + padVal;
+    }
+
+    if (item['Display ID']) return String(item['Display ID']).trim();
+    if (item.displayId) return String(item.displayId).trim();
+
+    // Map used numbers
+    var usedNumbers = {};
+    for (var i = 0; i < allItems.length; i++) {
+      var it = allItems[i];
+      var itId = String(it.ID || it.id || '').trim().toUpperCase();
+      var dispId = String(it['Display ID'] || it.displayId || '').trim().toUpperCase();
+      var m = (dispId && dispId.match(regex)) || itId.match(regex);
+      if (m) {
+        usedNumbers[parseInt(m[1], 10)] = true;
+      }
+    }
+
+    // Sort remaining items by Created At, then ID
+    var remaining = allItems.filter(function(it) {
+      var itId = String(it.ID || it.id || '').trim().toUpperCase();
+      return itId && !itId.match(regex) && !(it['Display ID'] || it.displayId);
+    });
+
+    remaining.sort(function(a, b) {
+      var tA = new Date(a['Created At'] || a.createdAt || 0).getTime() || 0;
+      var tB = new Date(b['Created At'] || b.createdAt || 0).getTime() || 0;
+      if (tA !== tB) return tA - tB;
+      var idA = String(a.ID || a.id || '').toUpperCase();
+      var idB = String(b.ID || b.id || '').toUpperCase();
+      return idA.localeCompare(idB);
+    });
+
+    var nextNum = 1;
+    for (var j = 0; j < remaining.length; j++) {
+      var curId = String(remaining[j].ID || remaining[j].id || '').trim().toUpperCase();
+      while (usedNumbers[nextNum]) {
+        nextNum++;
+      }
+      var assigned = prefix + (nextNum < 1000 ? ('000' + nextNum).slice(-3) : String(nextNum));
+      usedNumbers[nextNum] = true;
+      if (curId === rawId) {
+        return assigned;
+      }
+      nextNum++;
+    }
+
+    return prefix + '001';
+  };
+
+  SheetsServiceClass.prototype.getEmployeeDisplayId = function(emp, allEmployees) {
+    if (!allEmployees) allEmployees = this.getAllEmployees();
+    return this.computeDeterministicDisplayId(emp, allEmployees, 'EMP');
+  };
+
+  SheetsServiceClass.prototype.getJobSiteDisplayId = function(site, allSites) {
+    if (!allSites) allSites = this.getAllJobSites();
+    return this.computeDeterministicDisplayId(site, allSites, 'SITE');
   };
 
   SheetsServiceClass.prototype.generateShiftId = function() {

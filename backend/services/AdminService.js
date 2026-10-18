@@ -62,6 +62,7 @@ var AdminService = (function() {
         jobSites: sites.map(function(s) {
           return {
             id: s.ID,
+            displayId: _SheetsService.getJobSiteDisplayId(s, sites),
             name: s.Name,
             address: s.Address || '',
             lat: parseFloat(s.Latitude),
@@ -110,13 +111,18 @@ var AdminService = (function() {
         'Created At': new Date().toISOString()
       };
 
+      var displayId = _SheetsService.getJobSiteDisplayId({ ID: siteId, 'Created At': siteData['Created At'] });
+      siteData['Display ID'] = displayId;
+      siteData.displayId = displayId;
+
       _SheetsService.appendRow(_SHEETS.JOB_SITES, siteData);
       var adminName = session ? session.name : 'Admin';
-      this.logAudit('SYSTEM', 'create_job_site', 'success', 'Created site ' + siteId + ': ' + name + ' (' + lat + ', ' + lon + ', ' + geofenceRadius + 'm)', adminName);
+      this.logAudit('SYSTEM', 'create_job_site', 'success', 'Created site ' + siteId + ' (' + displayId + '): ' + name + ' (' + lat + ', ' + lon + ', ' + geofenceRadius + 'm)', adminName);
 
       return {
         success: true,
         siteId: siteId,
+        displayId: displayId,
         site: siteData,
         jobSite: siteData,
         message: 'Job site created successfully'
@@ -197,6 +203,7 @@ var AdminService = (function() {
         employees: employees.map(function(e) {
           return {
             id: e.ID,
+            displayId: _SheetsService.getEmployeeDisplayId(e, employees),
             name: e.Name,
             phone: e.Phone || '',
             role: e.Role || 'Labourer',
@@ -267,15 +274,21 @@ var AdminService = (function() {
         'Last Accessed': ''
       };
 
+      var displayId = _SheetsService.getEmployeeDisplayId({ ID: employeeId, 'Created At': employeeData['Created At'] });
+      employeeData['Display ID'] = displayId;
+      employeeData.displayId = displayId;
+
       _SheetsService.appendRow(_SHEETS.EMPLOYEES, employeeData);
       var adminName = session ? session.name : 'Admin';
-      this.logAudit(employeeId, 'create_employee', 'success', 'Created employee ' + employeeId + ' (' + name + ', role: ' + role + (siteId ? ', site: ' + siteId : '') + ')', adminName);
+      this.logAudit(employeeId, 'create_employee', 'success', 'Created employee ' + employeeId + ' (' + displayId + ', ' + name + ', role: ' + role + (siteId ? ', site: ' + siteId : '') + ')', adminName);
 
       return {
         success: true,
         employeeId: employeeId,
+        displayId: displayId,
         employee: {
           id: employeeId,
+          displayId: displayId,
           name: name,
           phone: phone,
           role: role,
@@ -779,6 +792,7 @@ var AdminService = (function() {
         employees: employees.map(function(e) {
           return {
             id: e.ID,
+            displayId: _SheetsService.getEmployeeDisplayId(e, employees),
             name: e.Name,
             phone: e.Phone || '',
             role: e.Role || 'Labourer',
@@ -794,6 +808,7 @@ var AdminService = (function() {
         jobSites: jobSites.map(function(s) {
           return {
             id: s.ID,
+            displayId: _SheetsService.getJobSiteDisplayId(s, jobSites),
             name: s.Name,
             address: s.Address || '',
             lat: s.Latitude ? parseFloat(s.Latitude) : null,
@@ -1194,6 +1209,7 @@ var AdminService = (function() {
           }, 0);
           return {
             id: e.ID,
+            displayId: _SheetsService.getEmployeeDisplayId(e, allEmployees),
             name: e.Name,
             phone: e.Phone || '',
             role: e.Role || 'Labourer',
@@ -1214,6 +1230,7 @@ var AdminService = (function() {
           var siteShifts = allShifts.filter(function(shift) { return String(shift['Site ID']) === s.ID && shift.Status !== 'Voided'; });
           return {
             id: s.ID,
+            displayId: _SheetsService.getJobSiteDisplayId(s, allSites),
             name: s.Name,
             address: s.Address || '',
             lat: parseFloat(s.Latitude),

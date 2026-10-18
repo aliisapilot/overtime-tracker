@@ -16,6 +16,7 @@ interface ConfirmDeleteModalProps {
   recordTitle: string;
   subtitle?: string;
   isSubmitting: boolean;
+  serverError?: string | null;
   onConfirm: (reason: string, policyAck?: boolean) => Promise<void>;
   onClose: () => void;
 }
@@ -27,6 +28,7 @@ export default function ConfirmDeleteModal({
   recordTitle,
   subtitle,
   isSubmitting,
+  serverError,
   onConfirm,
   onClose,
 }: ConfirmDeleteModalProps) {
@@ -196,6 +198,17 @@ export default function ConfirmDeleteModal({
             <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
               <span>⚠️</span>
               <span>{validationError}</span>
+            </div>
+          )}
+
+          {/* Server / Backend Compatibility Error Banner */}
+          {serverError && (
+            <div className="p-3.5 rounded-2xl bg-rose-500/15 border border-rose-500/40 text-rose-200 text-xs space-y-1.5 shadow-lg shadow-rose-950/30">
+              <div className="flex items-center gap-1.5 font-bold text-rose-300">
+                <span>⚠️</span>
+                <span>Operation Incomplete</span>
+              </div>
+              <p className="leading-relaxed text-[11px] opacity-95">{serverError}</p>
             </div>
           )}
 

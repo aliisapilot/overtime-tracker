@@ -23,6 +23,7 @@ import {
 } from '@/lib/api';
 import ChangePinModal from '@/components/ChangePinModal';
 import ConfirmDeleteModal, { DeleteActionType } from '@/components/ConfirmDeleteModal';
+import { getEmployeeDisplayId, getJobSiteDisplayId } from '@/lib/displayId';
 import {
   useAdminDashboard,
   useAdminAttendance,
@@ -128,6 +129,21 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
   const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [isManualSyncing, setIsManualSyncing] = useState(false);
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
+
+  // Auto-dismiss ordinary success notifications after ~3 seconds (keep error notifications visible)
+  useEffect(() => {
+    if (actionMessage && actionMessage.type === 'success') {
+      const timer = setTimeout(() => {
+        setActionMessage(null);
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [actionMessage]);
+
+  // Modal error states (displayed directly inside modals if operations fail)
+  const [deleteModalError, setDeleteModalError] = useState<string | null>(null);
+  const [addEmpModalError, setAddEmpModalError] = useState<string | null>(null);
+  const [editEmpModalError, setEditEmpModalError] = useState<string | null>(null);
 
   // Confirm delete/archive/void modal state
   const [deleteModalState, setDeleteModalState] = useState<{
@@ -260,16 +276,18 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
     setEditEmpSiteId(emp.siteId || '');
     setEditEmpStatus(emp.status || 'Active');
     setEditEmpPin('');
+    setEditEmpModalError(null);
   };
 
   const handleUpdateEmployee = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingEmp) return;
     if (!editEmpName.trim() || !editEmpId.trim()) {
-      setActionMessage({ type: 'error', text: 'Employee ID and Name are required' });
+      setEditEmpModalError('Employee ID and Name are required');
       return;
     }
     setSubmittingModal(true);
+    setEditEmpModalError(null);
     try {
       const res = await updateEmployee(session.token, {
         currentId: editingEmp.id,
@@ -290,16 +308,22 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
           status: editEmpStatus,
         };
         updateEmployeeLocally(confirmed as EmployeeProfile);
+        const displayId = getEmployeeDisplayId(editEmpId.trim(), employees);
         setActionMessage({
           type: 'success',
-          text: `Employee ${editEmpName} updated successfully (ID: ${editEmpId.trim().toUpperCase()})!`,
+          text: `Employee ${editEmpName} updated successfully (${displayId})!`,
         });
         setEditingEmp(null);
+        setEditEmpModalError(null);
       } else {
-        setActionMessage({ type: 'error', text: res.message || 'Failed to update employee' });
+        const errMsg = res.message || 'Failed to update employee';
+        setEditEmpModalError(errMsg);
+        setActionMessage({ type: 'error', text: errMsg });
       }
     } catch (err: unknown) {
-      setActionMessage({ type: 'error', text: (err as Error).message });
+      const errMsg = (err as Error).message || 'Failed to update employee';
+      setEditEmpModalError(errMsg);
+      setActionMessage({ type: 'error', text: errMsg });
     } finally {
       setSubmittingModal(false);
     }
@@ -308,10 +332,11 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
   const handleCreateEmployee = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newEmpName.trim() || !newEmpPin.trim()) {
-      setActionMessage({ type: 'error', text: 'Employee Name and PIN are required' });
+      setAddEmpModalError('Employee Name and PIN are required');
       return;
     }
     setSubmittingModal(true);
+    setAddEmpModalError(null);
     try {
       const res = await createEmployee(session.token, {
         employeeId: newEmpCustomId.trim().toUpperCase() || undefined,
@@ -331,23 +356,31 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
           role: 'Labourer',
           siteId: confirmed?.siteId || newEmpSiteId.trim(),
           status: confirmed?.status || 'Active',
+          displayId: confirmed?.displayId || getEmployeeDisplayId(assignedId, employees),
         };
         addEmployeeLocally(newEmpObj);
+        const displayId = newEmpObj.displayId || getEmployeeDisplayId(assignedId, employees);
+        const siteName = newEmpSiteId ? (jobSites.find(s => getSiteId(s) === newEmpSiteId.trim())?.name || getJobSiteDisplayId(newEmpSiteId.trim(), jobSites)) : '';
         setActionMessage({
           type: 'success',
-          text: `Labourer ${newEmpName} registered successfully! Assigned ID: ${assignedId}${newEmpSiteId ? ` (Assigned to ${jobSites.find(s => getSiteId(s) === newEmpSiteId.trim())?.name || newEmpSiteId.trim()})` : ''}`,
+          text: `Labourer ${newEmpName} registered successfully! Assigned ID: ${displayId}${siteName ? ` (Assigned to ${siteName})` : ''}`,
         });
         setShowAddEmpModal(false);
+        setAddEmpModalError(null);
         setNewEmpCustomId('');
         setNewEmpName('');
         setNewEmpPhone('');
         setNewEmpPin('');
         setNewEmpSiteId('');
       } else {
-        setActionMessage({ type: 'error', text: res.message || 'Failed to create employee' });
+        const errMsg = res.message || 'Failed to create employee';
+        setAddEmpModalError(errMsg);
+        setActionMessage({ type: 'error', text: errMsg });
       }
     } catch (err: unknown) {
-      setActionMessage({ type: 'error', text: (err as Error).message });
+      const errMsg = (err as Error).message || 'Failed to create employee';
+      setAddEmpModalError(errMsg);
+      setActionMessage({ type: 'error', text: errMsg });
     } finally {
       setSubmittingModal(false);
     }
@@ -528,6 +561,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
   const handleExecuteConfirmAction = async (reason: string, policyAck?: boolean) => {
     if (!deleteModalState) return;
     setIsSubmittingDelete(true);
+    setDeleteModalError(null);
     const { actionType, recordId, recordTitle, shiftPhotoType } = deleteModalState;
     try {
       let res: any;
@@ -535,9 +569,10 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
         res = await archiveEmployee(session.token, recordId, reason);
         if (res.success) {
           archiveEmployeeLocally(recordId);
+          const dispId = getEmployeeDisplayId(recordId, employees);
           setActionMessage({
             type: 'success',
-            text: `Employee ${recordTitle} (${recordId}) archived successfully. Historical attendance & overtime preserved.`,
+            text: `Employee ${recordTitle} (${dispId}) archived successfully. Historical attendance & overtime preserved.`,
           });
           refreshArchivedRecords();
         }
@@ -551,9 +586,10 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
             status: 'Active',
           };
           restoreEmployeeLocally(empObj as EmployeeProfile);
+          const dispId = getEmployeeDisplayId(recordId, employees);
           setActionMessage({
             type: 'success',
-            text: `Employee ${recordTitle} (${recordId}) restored to Active status!`,
+            text: `Employee ${recordTitle} (${dispId}) restored to Active status!`,
           });
           refreshArchivedRecords();
         }
@@ -561,9 +597,10 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
         res = await archiveJobSite(session.token, recordId, reason);
         if (res.success) {
           archiveJobSiteLocally(recordId);
+          const dispSiteId = getJobSiteDisplayId(recordId, jobSites);
           setActionMessage({
             type: 'success',
-            text: `Job site ${recordTitle} (${recordId}) archived successfully.`,
+            text: `Job site ${recordTitle} (${dispSiteId}) archived successfully.`,
           });
           refreshArchivedRecords();
         }
@@ -576,9 +613,10 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
             status: 'Active',
           };
           restoreJobSiteLocally(siteObj as JobSite);
+          const dispSiteId = getJobSiteDisplayId(recordId, jobSites);
           setActionMessage({
             type: 'success',
-            text: `Job site ${recordTitle} (${recordId}) restored to Active status!`,
+            text: `Job site ${recordTitle} (${dispSiteId}) restored to Active status!`,
           });
           refreshArchivedRecords();
         }
@@ -617,12 +655,17 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
       }
 
       if (res && !res.success) {
-        setActionMessage({ type: 'error', text: res.message || 'Operation failed.' });
+        const errMsg = res.message || 'Operation failed.';
+        setDeleteModalError(errMsg);
+        setActionMessage({ type: 'error', text: errMsg });
       } else {
+        setDeleteModalError(null);
         setDeleteModalState(null);
       }
     } catch (err: unknown) {
-      setActionMessage({ type: 'error', text: (err as Error).message });
+      const errMsg = (err as Error).message || 'An unexpected error occurred';
+      setDeleteModalError(errMsg);
+      setActionMessage({ type: 'error', text: errMsg });
     } finally {
       setIsSubmittingDelete(false);
     }
@@ -819,10 +862,16 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800">
-                        {overtimeList.map((ot) => (
+                        {overtimeList.map((ot) => {
+                          const otEmpDisp = getEmployeeDisplayId(ot['Employee ID'], employees);
+                          return (
                           <tr key={ot.ID} className="hover:bg-slate-800/30">
-                            <td className="py-3 pr-4 font-mono text-slate-400">{ot.ID}</td>
-                            <td className="py-3 pr-4 font-mono font-medium text-white">{ot['Employee ID']}</td>
+                            <td className="py-3 pr-4 font-mono text-slate-400 text-xs">{ot.ID}</td>
+                            <td className="py-3 pr-4 font-mono font-medium text-white">
+                              <span title={ot['Employee ID'] !== otEmpDisp ? `Internal ID: ${ot['Employee ID']}` : undefined}>
+                                {otEmpDisp}
+                              </span>
+                            </td>
                             <td className="py-3 pr-4 font-mono">{ot.Date}</td>
                             <td className="py-3 pr-4 font-mono font-bold text-blue-400 text-sm">
                               {ot['Overtime Hours']} hrs
@@ -858,7 +907,8 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                               </div>
                             </td>
                           </tr>
-                        ))}
+                        );
+                      })}
                       </tbody>
                     </table>
                   </div>
@@ -941,17 +991,19 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                           const eLon = att.endLon ?? att['End Longitude'];
                           const eAcc = att.endAccuracy ?? att['End Accuracy'];
                           const empId = att['Employee ID'] || att.employeeId || '—';
+                          const empDisp = getEmployeeDisplayId(empId, employees);
                           const empName = att.employeeName || employees.find((e) => e.id === empId)?.name || 'Labourer';
                           const siteId = att['Site ID'] || att.siteId || '';
+                          const siteDisp = getJobSiteDisplayId(siteId, jobSites);
                           const siteName = att.siteName || jobSites.find((s) => getSiteId(s) === siteId)?.name || siteId || 'Unassigned';
                           const durationStr = formatDuration(att['Start Time'] || att.startTime, att['End Time'] || att.endTime);
 
                           return (
                             <tr key={att.ID || att.shiftId} className="hover:bg-slate-800/30">
                               {/* Employee Name & ID */}
-                              <td className="py-3 pr-3">
-                                <div className="font-semibold text-white">{empName}</div>
-                                <div className="text-[11px] font-mono text-blue-400">{empId}</div>
+                              <td className="py-3 pr-3 w-40 max-w-[160px]">
+                                <div className="font-semibold text-white truncate" title={empName}>{empName}</div>
+                                <div className="text-[11px] font-mono text-blue-400" title={empId !== empDisp ? `Internal ID: ${empId}` : undefined}>{empDisp}</div>
                                 {att.ID && (
                                   <div className="text-[9px] font-mono text-slate-500 truncate max-w-[100px]">
                                     #{att.ID}
@@ -960,9 +1012,10 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                               </td>
 
                               {/* Job Site */}
-                              <td className="py-3 pr-3">
-                                <span className="px-2 py-0.5 rounded-lg text-[11px] font-medium bg-slate-800 text-slate-300 border border-slate-700">
-                                  {siteName}
+                              <td className="py-3 pr-3 max-w-[160px]">
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-medium bg-slate-800 text-slate-300 border border-slate-700 truncate max-w-full" title={siteId ? `${siteName} (${siteId})` : siteName}>
+                                  <span className="truncate">{siteName}</span>
+                                  {siteDisp && <span className="text-[10px] text-slate-400 font-mono shrink-0">({siteDisp})</span>}
                                 </span>
                               </td>
 
@@ -1282,9 +1335,11 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-800">
-                                {Object.entries(dailyReport.bySite).map(([siteId, data]) => (
+                                {Object.entries(dailyReport.bySite).map(([siteId, data]) => {
+                                  const siteDisp = getJobSiteDisplayId(siteId, jobSites);
+                                  return (
                                   <tr key={siteId} className="hover:bg-slate-800/30">
-                                    <td className="py-3 px-4 font-mono text-blue-400 font-medium">{siteId}</td>
+                                    <td className="py-3 px-4 font-mono text-blue-400 font-medium w-24 whitespace-nowrap" title={siteId !== siteDisp ? `Internal ID: ${siteId}` : undefined}>{siteDisp}</td>
                                     <td className="py-3 px-4 text-white font-medium">{data.siteName}</td>
                                     <td className="py-3 px-4 font-mono">{data.shifts}</td>
                                     <td className="py-3 px-4 font-mono text-emerald-400">
@@ -1297,7 +1352,8 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                                       {(data.regularHours + data.overtimeHours).toFixed(1)} hrs
                                     </td>
                                   </tr>
-                                ))}
+                                  );
+                                })}
                               </tbody>
                             </table>
                           </div>
@@ -1312,7 +1368,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                             <table className="w-full text-left text-xs text-slate-300">
                               <thead className="text-[10px] uppercase tracking-wider text-slate-400 border-b border-slate-700/80 bg-slate-900/60">
                                 <tr>
-                                  <th className="py-2.5 px-4">Employee ID</th>
+                                  <th className="py-2.5 px-4 w-24">Employee ID</th>
                                   <th className="py-2.5 px-4">Employee Name</th>
                                   <th className="py-2.5 px-4">Shifts</th>
                                   <th className="py-2.5 px-4">Regular Hrs</th>
@@ -1321,9 +1377,11 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-800">
-                                {Object.entries(dailyReport.byEmployee).map(([empId, data]) => (
+                                {Object.entries(dailyReport.byEmployee).map(([empId, data]) => {
+                                  const empDisp = getEmployeeDisplayId(empId, employees);
+                                  return (
                                   <tr key={empId} className="hover:bg-slate-800/30">
-                                    <td className="py-3 px-4 font-mono text-blue-400 font-medium">{empId}</td>
+                                    <td className="py-3 px-4 font-mono text-blue-400 font-medium w-24 whitespace-nowrap" title={empId !== empDisp ? `Internal ID: ${empId}` : undefined}>{empDisp}</td>
                                     <td className="py-3 px-4 text-white font-medium">{data.employeeName}</td>
                                     <td className="py-3 px-4 font-mono">{data.shifts}</td>
                                     <td className="py-3 px-4 font-mono text-emerald-400">
@@ -1336,7 +1394,8 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                                       {(data.regularHours + data.overtimeHours).toFixed(1)} hrs
                                     </td>
                                   </tr>
-                                ))}
+                                  );
+                                })}
                               </tbody>
                             </table>
                           </div>
@@ -1391,11 +1450,13 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                         {employees.map((emp) => {
                           const sId = (emp.siteId || '').trim();
                           const matchedSite = sId ? jobSites.find((s) => getSiteId(s) === sId) : null;
+                          const empDisp = getEmployeeDisplayId(emp.id, employees);
+                          const siteDisp = sId ? getJobSiteDisplayId(sId, jobSites) : '';
 
                           return (
                             <tr key={emp.id} className="hover:bg-slate-800/30">
-                              <td className="py-3 pr-4 font-mono font-medium text-blue-400">{emp.id}</td>
-                              <td className="py-3 pr-4 text-white font-medium">{emp.name}</td>
+                              <td className="py-3 pr-4 font-mono font-medium text-blue-400 w-24 whitespace-nowrap" title={emp.id !== empDisp ? `Internal ID: ${emp.id}` : undefined}>{empDisp}</td>
+                              <td className="py-3 pr-4 text-white font-medium max-w-[160px] truncate">{emp.name}</td>
                               <td className="py-3 pr-4">{emp.role}</td>
                               <td className="py-3 pr-4">
                                 {!sId || sId === 'FIELD' || sId === 'Unassigned' ? (
@@ -1408,7 +1469,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                                       {matchedSite ? getSiteName(matchedSite) : sId}
                                     </span>
                                     <span className="font-mono text-[10px] text-blue-400">
-                                      {sId}
+                                      {siteDisp}
                                     </span>
                                   </div>
                                 )}
@@ -1545,6 +1606,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                         {jobSites.map((site) => {
                           const sid = getSiteId(site);
                           const sname = getSiteName(site);
+                          const siteDisp = getJobSiteDisplayId(sid, jobSites);
                           const sLat = site.lat ?? site.Latitude;
                           const sLon = site.lon ?? site.Longitude;
                           const sRadius = site.geofenceRadius ?? site['Geofence Radius'] ?? 100;
@@ -1552,9 +1614,9 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
 
                           return (
                             <tr key={sid} className="hover:bg-slate-800/30">
-                              <td className="py-3 pr-4 font-mono font-medium text-blue-400">{sid}</td>
-                              <td className="py-3 pr-4 text-white font-medium">{sname}</td>
-                              <td className="py-3 pr-4 text-slate-400 max-w-[180px] truncate">
+                              <td className="py-3 pr-4 font-mono font-medium text-blue-400 w-24 whitespace-nowrap" title={sid !== siteDisp ? `Internal ID: ${sid}` : undefined}>{siteDisp}</td>
+                              <td className="py-3 pr-4 text-white font-medium max-w-[160px] truncate">{sname}</td>
+                              <td className="py-3 pr-4 text-slate-400 max-w-[180px] truncate" title={site.address || site.Address || ''}>
                                 {site.address || site.Address || '—'}
                               </td>
                               <td className="py-3 pr-4 font-mono text-[11px] text-slate-300">
@@ -1918,11 +1980,13 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-800/60">
-                                {filteredEmployees.map((emp) => (
+                                {filteredEmployees.map((emp) => {
+                                  const empDisp = getEmployeeDisplayId(emp.id, employees);
+                                  return (
                                   <tr key={emp.id} className="hover:bg-slate-800/30">
                                     <td className="py-3 px-3">
                                       <div className="font-semibold text-white">{emp.name}</div>
-                                      <div className="text-[11px] font-mono text-blue-400">{emp.id}</div>
+                                      <div className="text-[11px] font-mono text-blue-400" title={emp.id !== empDisp ? `Internal ID: ${emp.id}` : undefined}>{empDisp}</div>
                                       {emp.phone && <div className="text-[10px] text-slate-500">{emp.phone}</div>}
                                     </td>
                                     <td className="py-3 px-3 font-mono text-[11px] text-slate-300 whitespace-nowrap">
@@ -1945,7 +2009,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                                             isOpen: true,
                                             actionType: 'restore_employee',
                                             recordId: emp.id,
-                                            recordTitle: `${emp.name} (${emp.id})`,
+                                            recordTitle: `${emp.name} (${empDisp})`,
                                             subtitle: `Current status: Archived. Restoring will reactivate PIN and shift access.`,
                                           })
                                         }
@@ -1956,7 +2020,8 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                                       </button>
                                     </td>
                                   </tr>
-                                ))}
+                                  );
+                                })}
                               </tbody>
                             </table>
                           </div>
@@ -1985,11 +2050,13 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-800/60">
-                                {filteredSites.map((site) => (
+                                {filteredSites.map((site) => {
+                                  const siteDisp = getJobSiteDisplayId(site.id, jobSites);
+                                  return (
                                   <tr key={site.id} className="hover:bg-slate-800/30">
                                     <td className="py-3 px-3">
                                       <div className="font-semibold text-white">{site.name}</div>
-                                      <div className="text-[11px] font-mono text-emerald-400">{site.id}</div>
+                                      <div className="text-[11px] font-mono text-emerald-400" title={site.id !== siteDisp ? `Internal ID: ${site.id}` : undefined}>{siteDisp}</div>
                                       {site.address && <div className="text-[10px] text-slate-500">{site.address}</div>}
                                     </td>
                                     <td className="py-3 px-3 font-mono text-[11px] text-slate-300 whitespace-nowrap">
@@ -2012,7 +2079,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                                             isOpen: true,
                                             actionType: 'restore_site',
                                             recordId: site.id,
-                                            recordTitle: `${site.name} (${site.id})`,
+                                            recordTitle: `${site.name} (${siteDisp})`,
                                             subtitle: `Current status: Archived. Restoring will allow employee assignment and shifts.`,
                                           })
                                         }
@@ -2023,7 +2090,8 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                                       </button>
                                     </td>
                                   </tr>
-                                ))}
+                                  );
+                                })}
                               </tbody>
                             </table>
                           </div>
@@ -2151,6 +2219,13 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
               Creates an employee record in Google Sheets with standard PBKDF2 PIN hashing (25,000 iterations).
             </p>
 
+            {addEmpModalError && (
+              <div className="mb-4 p-3 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-start gap-2">
+                <span>⚠️</span>
+                <span className="flex-1">{addEmpModalError}</span>
+              </div>
+            )}
+
             <form onSubmit={handleCreateEmployee} className="space-y-4">
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
@@ -2208,9 +2283,10 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                   {jobSites.map((s) => {
                     const sid = getSiteId(s);
                     const sname = getSiteName(s);
+                    const sdisp = getJobSiteDisplayId(sid, jobSites);
                     return (
                       <option key={sid} value={sid}>
-                        {sname} ({sid})
+                        {sname} ({sdisp})
                       </option>
                     );
                   })}
@@ -2238,7 +2314,10 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
               <div className="flex gap-3 pt-4">
                 <button
                   type="button"
-                  onClick={() => setShowAddEmpModal(false)}
+                  onClick={() => {
+                    setAddEmpModalError(null);
+                    setShowAddEmpModal(false);
+                  }}
                   className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-slate-300 bg-slate-800 hover:bg-slate-700 border border-slate-700 transition-all cursor-pointer"
                 >
                   Cancel
@@ -2264,6 +2343,13 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
             <p className="text-xs text-slate-400 mb-5">
               Change long or messy IDs (e.g. rename to <span className="text-blue-400 font-mono">EMP001</span>), edit name, or reset PIN.
             </p>
+
+            {editEmpModalError && (
+              <div className="mb-4 p-3 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-start gap-2">
+                <span>⚠️</span>
+                <span className="flex-1">{editEmpModalError}</span>
+              </div>
+            )}
 
             <form onSubmit={handleUpdateEmployee} className="space-y-4">
               <div>
@@ -2322,9 +2408,10 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                   {jobSites.map((s) => {
                     const sid = getSiteId(s);
                     const sname = getSiteName(s);
+                    const sdisp = getJobSiteDisplayId(sid, jobSites);
                     return (
                       <option key={sid} value={sid}>
-                        {sname} ({sid})
+                        {sname} ({sdisp})
                       </option>
                     );
                   })}
@@ -2365,7 +2452,10 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
               <div className="flex gap-3 pt-4">
                 <button
                   type="button"
-                  onClick={() => setEditingEmp(null)}
+                  onClick={() => {
+                    setEditEmpModalError(null);
+                    setEditingEmp(null);
+                  }}
                   className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-slate-300 bg-slate-800 hover:bg-slate-700 border border-slate-700 transition-all cursor-pointer"
                 >
                   Cancel
@@ -2454,8 +2544,12 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
           recordTitle={deleteModalState.recordTitle}
           subtitle={deleteModalState.subtitle}
           isSubmitting={isSubmittingDelete}
+          serverError={deleteModalError}
           onConfirm={handleExecuteConfirmAction}
-          onClose={() => setDeleteModalState(null)}
+          onClose={() => {
+            setDeleteModalError(null);
+            setDeleteModalState(null);
+          }}
         />
       )}
     </div>

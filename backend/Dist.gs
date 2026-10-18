@@ -2,7 +2,7 @@
  * OVERTIME TRACKER — COMPLETE GOOGLE APPS SCRIPT BACKEND
  * Bundled for single-file deployment at script.google.com
  * Owner: Ateeb
- * Generated: 2026-10-17T20:32:46.226Z
+ * Generated: 2026-10-18T14:51:26.846Z
  */
 
 
@@ -490,14 +490,14 @@ var SheetsService = (function() {
     var employeesSheet = this.getOrCreateSheet(_SHEETS.EMPLOYEES);
     this.ensureHeaders(employeesSheet, [
       'ID', 'Name', 'Phone', 'Role', 'Site ID', 'PIN Hash', 'Status', 'Created At', 'Last Accessed',
-      'Archived At', 'Archived By', 'Archive Reason', 'Restored At', 'Restored By'
+      'Archived At', 'Archived By', 'Archive Reason', 'Restored At', 'Restored By', 'Display ID'
     ]);
 
     // 2. Job Sites sheet (Headers only - NO sample production sites)
     var jobSitesSheet = this.getOrCreateSheet(_SHEETS.JOB_SITES);
     this.ensureHeaders(jobSitesSheet, [
       'ID', 'Name', 'Address', 'Latitude', 'Longitude', 'Geofence Radius', 'Status', 'Created At',
-      'Archived At', 'Archived By', 'Archive Reason', 'Restored At', 'Restored By'
+      'Archived At', 'Archived By', 'Archive Reason', 'Restored At', 'Restored By', 'Display ID'
     ]);
 
     // 3. Shifts sheet (Extended with photo verification fields)
@@ -1000,7 +1000,93 @@ var SheetsService = (function() {
   };
 
   SheetsServiceClass.prototype.generateSiteId = function() {
-    return this.generateId('SITE');
+    var sites = this.getAllJobSites();
+    var maxNum = 0;
+    sites.forEach(function(s) {
+      var match = String(s.ID || s.id || '').match(/^SITE(\d+)$/i);
+      if (match) {
+        var num = parseInt(match[1], 10);
+        if (num > maxNum) maxNum = num;
+      }
+    });
+    var nextNum = maxNum + 1;
+    var padded = nextNum < 1000 ? ('000' + nextNum).slice(-3) : String(nextNum);
+    return 'SITE' + padded;
+  };
+
+  /**
+   * Deterministic, collision-free Display ID computation (EMP001, SITE001)
+   * Stable across refreshes, devices, and deployments. Does not depend on row position.
+   */
+  SheetsServiceClass.prototype.computeDeterministicDisplayId = function(item, allItems, prefix) {
+    if (!item) return '';
+    var rawId = String(item.ID || item.id || '').trim().toUpperCase();
+    if (!rawId) return '';
+    if (prefix === 'EMP' && rawId === 'EMP000') return 'EMP000';
+
+    var regex = new RegExp('^' + prefix + '(\\d+)$', 'i');
+    var directMatch = rawId.match(regex);
+    if (directMatch) {
+      var numVal = parseInt(directMatch[1], 10);
+      var padVal = numVal < 1000 ? ('000' + numVal).slice(-3) : String(numVal);
+      return prefix + padVal;
+    }
+
+    if (item['Display ID']) return String(item['Display ID']).trim();
+    if (item.displayId) return String(item.displayId).trim();
+
+    // Map used numbers
+    var usedNumbers = {};
+    for (var i = 0; i < allItems.length; i++) {
+      var it = allItems[i];
+      var itId = String(it.ID || it.id || '').trim().toUpperCase();
+      var dispId = String(it['Display ID'] || it.displayId || '').trim().toUpperCase();
+      var m = (dispId && dispId.match(regex)) || itId.match(regex);
+      if (m) {
+        usedNumbers[parseInt(m[1], 10)] = true;
+      }
+    }
+
+    // Sort remaining items by Created At, then ID
+    var remaining = allItems.filter(function(it) {
+      var itId = String(it.ID || it.id || '').trim().toUpperCase();
+      return itId && !itId.match(regex) && !(it['Display ID'] || it.displayId);
+    });
+
+    remaining.sort(function(a, b) {
+      var tA = new Date(a['Created At'] || a.createdAt || 0).getTime() || 0;
+      var tB = new Date(b['Created At'] || b.createdAt || 0).getTime() || 0;
+      if (tA !== tB) return tA - tB;
+      var idA = String(a.ID || a.id || '').toUpperCase();
+      var idB = String(b.ID || b.id || '').toUpperCase();
+      return idA.localeCompare(idB);
+    });
+
+    var nextNum = 1;
+    for (var j = 0; j < remaining.length; j++) {
+      var curId = String(remaining[j].ID || remaining[j].id || '').trim().toUpperCase();
+      while (usedNumbers[nextNum]) {
+        nextNum++;
+      }
+      var assigned = prefix + (nextNum < 1000 ? ('000' + nextNum).slice(-3) : String(nextNum));
+      usedNumbers[nextNum] = true;
+      if (curId === rawId) {
+        return assigned;
+      }
+      nextNum++;
+    }
+
+    return prefix + '001';
+  };
+
+  SheetsServiceClass.prototype.getEmployeeDisplayId = function(emp, allEmployees) {
+    if (!allEmployees) allEmployees = this.getAllEmployees();
+    return this.computeDeterministicDisplayId(emp, allEmployees, 'EMP');
+  };
+
+  SheetsServiceClass.prototype.getJobSiteDisplayId = function(site, allSites) {
+    if (!allSites) allSites = this.getAllJobSites();
+    return this.computeDeterministicDisplayId(site, allSites, 'SITE');
   };
 
   SheetsServiceClass.prototype.generateShiftId = function() {
@@ -2031,6 +2117,7 @@ var AdminService = (function() {
         jobSites: sites.map(function(s) {
           return {
             id: s.ID,
+            displayId: _SheetsService.getJobSiteDisplayId(s, sites),
             name: s.Name,
             address: s.Address || '',
             lat: parseFloat(s.Latitude),
@@ -2079,13 +2166,18 @@ var AdminService = (function() {
         'Created At': new Date().toISOString()
       };
 
+      var displayId = _SheetsService.getJobSiteDisplayId({ ID: siteId, 'Created At': siteData['Created At'] });
+      siteData['Display ID'] = displayId;
+      siteData.displayId = displayId;
+
       _SheetsService.appendRow(_SHEETS.JOB_SITES, siteData);
       var adminName = session ? session.name : 'Admin';
-      this.logAudit('SYSTEM', 'create_job_site', 'success', 'Created site ' + siteId + ': ' + name + ' (' + lat + ', ' + lon + ', ' + geofenceRadius + 'm)', adminName);
+      this.logAudit('SYSTEM', 'create_job_site', 'success', 'Created site ' + siteId + ' (' + displayId + '): ' + name + ' (' + lat + ', ' + lon + ', ' + geofenceRadius + 'm)', adminName);
 
       return {
         success: true,
         siteId: siteId,
+        displayId: displayId,
         site: siteData,
         jobSite: siteData,
         message: 'Job site created successfully'
@@ -2166,6 +2258,7 @@ var AdminService = (function() {
         employees: employees.map(function(e) {
           return {
             id: e.ID,
+            displayId: _SheetsService.getEmployeeDisplayId(e, employees),
             name: e.Name,
             phone: e.Phone || '',
             role: e.Role || 'Labourer',
@@ -2236,15 +2329,21 @@ var AdminService = (function() {
         'Last Accessed': ''
       };
 
+      var displayId = _SheetsService.getEmployeeDisplayId({ ID: employeeId, 'Created At': employeeData['Created At'] });
+      employeeData['Display ID'] = displayId;
+      employeeData.displayId = displayId;
+
       _SheetsService.appendRow(_SHEETS.EMPLOYEES, employeeData);
       var adminName = session ? session.name : 'Admin';
-      this.logAudit(employeeId, 'create_employee', 'success', 'Created employee ' + employeeId + ' (' + name + ', role: ' + role + (siteId ? ', site: ' + siteId : '') + ')', adminName);
+      this.logAudit(employeeId, 'create_employee', 'success', 'Created employee ' + employeeId + ' (' + displayId + ', ' + name + ', role: ' + role + (siteId ? ', site: ' + siteId : '') + ')', adminName);
 
       return {
         success: true,
         employeeId: employeeId,
+        displayId: displayId,
         employee: {
           id: employeeId,
+          displayId: displayId,
           name: name,
           phone: phone,
           role: role,
@@ -2748,6 +2847,7 @@ var AdminService = (function() {
         employees: employees.map(function(e) {
           return {
             id: e.ID,
+            displayId: _SheetsService.getEmployeeDisplayId(e, employees),
             name: e.Name,
             phone: e.Phone || '',
             role: e.Role || 'Labourer',
@@ -2763,6 +2863,7 @@ var AdminService = (function() {
         jobSites: jobSites.map(function(s) {
           return {
             id: s.ID,
+            displayId: _SheetsService.getJobSiteDisplayId(s, jobSites),
             name: s.Name,
             address: s.Address || '',
             lat: s.Latitude ? parseFloat(s.Latitude) : null,
@@ -3163,6 +3264,7 @@ var AdminService = (function() {
           }, 0);
           return {
             id: e.ID,
+            displayId: _SheetsService.getEmployeeDisplayId(e, allEmployees),
             name: e.Name,
             phone: e.Phone || '',
             role: e.Role || 'Labourer',
@@ -3183,6 +3285,7 @@ var AdminService = (function() {
           var siteShifts = allShifts.filter(function(shift) { return String(shift['Site ID']) === s.ID && shift.Status !== 'Voided'; });
           return {
             id: s.ID,
+            displayId: _SheetsService.getJobSiteDisplayId(s, allSites),
             name: s.Name,
             address: s.Address || '',
             lat: parseFloat(s.Latitude),
@@ -3757,7 +3860,22 @@ function doPost(e) {
 
     // 1. PUBLIC ACTIONS (ping and login only)
     if (action === 'ping') {
-      return jsonResponse({ success: true, message: 'pong', timestamp: new Date().toISOString() });
+      return jsonResponse({
+        success: true,
+        message: 'pong',
+        version: '2.1.0-archive-restore',
+        capabilities: [
+          'archiveEmployee',
+          'restoreEmployee',
+          'archiveJobSite',
+          'restoreJobSite',
+          'voidShift',
+          'voidOvertime',
+          'purgeAttendancePhoto',
+          'getArchivedRecords'
+        ],
+        timestamp: new Date().toISOString()
+      });
     }
 
     if (action === 'login') {

@@ -64,7 +64,22 @@ function doPost(e) {
 
     // 1. PUBLIC ACTIONS (ping and login only)
     if (action === 'ping') {
-      return jsonResponse({ success: true, message: 'pong', timestamp: new Date().toISOString() });
+      return jsonResponse({
+        success: true,
+        message: 'pong',
+        version: '2.1.0-archive-restore',
+        capabilities: [
+          'archiveEmployee',
+          'restoreEmployee',
+          'archiveJobSite',
+          'restoreJobSite',
+          'voidShift',
+          'voidOvertime',
+          'purgeAttendancePhoto',
+          'getArchivedRecords'
+        ],
+        timestamp: new Date().toISOString()
+      });
     }
 
     if (action === 'login') {

@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import {
   UserSession,
@@ -6,6 +6,7 @@ import {
   EmployeeProfile,
 } from '@/lib/api';
 import { useLabourerDashboard } from '@/lib/useDataLayer';
+import { getEmployeeDisplayId, getJobSiteDisplayId } from '@/lib/displayId';
 import {
   getCurrentPosition,
   categorizeAccuracy,
@@ -63,6 +64,16 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
   const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [breakMinutes, setBreakMinutes] = useState(60);
   const [showPinModal, setShowPinModal] = useState(false);
+
+  // Auto-dismiss ordinary success notifications after ~3 seconds (keep errors open until dismissed)
+  useEffect(() => {
+    if (actionMessage && actionMessage.type === 'success') {
+      const timer = setTimeout(() => {
+        setActionMessage(null);
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [actionMessage]);
 
   // Selfie Modal state
   const [selfieModalOpen, setSelfieModalOpen] = useState(false);
@@ -176,10 +187,10 @@ export default function LabourerDashboard({ session, onLogout }: LabourerDashboa
                 )}
               </div>
               <p className="text-xs sm:text-sm text-slate-400">
-                ID: <span className="font-mono text-blue-400 font-medium">{session.employee.id}</span> • Role:{' '}
+                ID: <span className="font-mono text-blue-400 font-semibold" title={`Internal ID: ${session.employee.id}`}>{getEmployeeDisplayId(session.employee.id)}</span> • Role:{' '}
                 {session.employee.role} • Site:{' '}
                 <span className={hasAssignedSite ? 'text-emerald-400 font-medium' : 'text-amber-400 font-medium'}>
-                  {hasAssignedSite ? (employeeProfile.siteName || assignedSiteId) : 'Unassigned'}
+                  {hasAssignedSite ? (employeeProfile.siteName ? `${getJobSiteDisplayId(assignedSiteId)} — ${employeeProfile.siteName}` : getJobSiteDisplayId(assignedSiteId)) : 'Unassigned'}
                 </span>
               </p>
             </div>

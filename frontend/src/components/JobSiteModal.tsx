@@ -241,7 +241,7 @@ export default function JobSiteModal({
             </h3>
             <p className="text-xs text-slate-400 mt-1">
               {isEditing
-                ? `Updating site ${siteToEdit?.ID} and geofence coordinates in Google Sheets.`
+                ? `Updating site ${siteToEdit?.displayId || siteToEdit?.ID || siteToEdit?.id} and geofence coordinates in Google Sheets.`
                 : 'Paste a Google Maps link, search an address, or position the pin on the map.'}
             </p>
           </div>
